@@ -1,4 +1,4 @@
-# superstore-returns-analysis[README.md](https://github.com/user-attachments/files/23812965/README.md)
+
 # Superstore Returns Analysis Dashboard
 
 Interactive Tableau dashboard analyzing product return patterns to identify key drivers and provide actionable recommendations for reducing return rates.
