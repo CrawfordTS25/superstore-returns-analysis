@@ -1,0 +1,629 @@
+TRIGGER When_an_item_is_created_or_modified: {"type": "OpenApiConnection", "inputs": {"parameters": {"dataset": "https://<tenant>.sharepoint.com/sites/<site>", "table": "<LIST_STAGING>"}, "host": {"apiId": "/providers/Microsoft.PowerApps/apis/shared_sharepointonline", "operationId": "GetOnUpdatedItems", "connectionName": "shared_sharepointonline"}}, "recurrence": {"frequency": "Minute", "interval": 1}, "runtimeConfiguration": {"concurrency": {"runs": 1, "maximumWaitingRuns": 100}}}
+## Triggered_Batch_Key [Compose] runAfter={'Get_Triggered_Staging_Record_New': ['Succeeded']}
+   inputs: @outputs('Get_Triggered_Staging_Record_New')?['body/BatchKey']
+## Get_Batch_Staging_Records [OpenApiConnection] runAfter={'Ready_and_Unclaimed': ['Succeeded']}
+   op: GetItems
+   table = <LIST_STAGING>
+   $filter = BatchKey eq '@{outputs('Triggered_Batch_Key')}'
+   $orderby = Created asc
+   $top = 100
+## Batch_Is_Unclaimed [If] runAfter={'Batch_Records_Found': ['Succeeded']}
+   expression: {"and": [{"equals": ["@length(body('Find_Claimed_Batch_Records'))", 0]}]}
+  ## Generate_Run_ID [Compose] runAfter={}
+     inputs: @concat( 'TRACE-', outputs('Triggered_Batch_Key'), '-', formatDateTime( convertTimeZone( utcNow(), 'UTC', 'Central Standard Time' ), 'HHmmss' ), '-', substring(guid(), 0, 8) )
+  ## Claim_Batch_Records [Foreach] runAfter={'Generate_Run_ID': ['Succeeded']}
+    ## Assign_Run_ID_to_Staging_Record [OpenApiConnection] runAfter={}
+       op: PatchItem
+       table = <LIST_STAGING>
+       id = @items('Claim_Batch_Records')?['ID']
+       item/Title = @items('Claim_Batch_Records')?['Title']
+       item/FileName = @items('Claim_Batch_Records')?['FileName']
+       item/BatchKey = @items('Claim_Batch_Records')?['BatchKey']
+       item/SharePointFileIdentifier = @items('Claim_Batch_Records')?['SharePointFileIdentifier']
+       item/FileReceivedDate = @items('Claim_Batch_Records')?['FileReceivedDate']
+       item/FileRole/Value = @items('Claim_Batch_Records')?['FileRole']?['Value']
+       item/ProcessingCycle/Value = @items('Claim_Batch_Records')?['ProcessingCycle']?['Value']
+       item/StagingStatus/Value = Processing
+       item/RunID = @outputs('Generate_Run_ID')
+       item/ProcessedDate = @items('Claim_Batch_Records')?['ProcessedDate']
+       item/ErrorMessage = @items('Claim_Batch_Records')?['ErrorMessage']
+       item/Notes = @items('Claim_Batch_Records')?['Notes']
+    ## Append_Source_File_Name [AppendToStringVariable] runAfter={'Assign_Run_ID_to_Staging_Record': ['Succeeded']}
+       inputs: {"name": "SourceFileGroup", "value": "@concat(\r\n items('Claim_Batch_Records')?['FileName'],\r\n decodeUriComponent('%0A')\r\n)"}
+  ## Create_Import_Run_Log [OpenApiConnection] runAfter={'Claim_Batch_Records': ['Succeeded']}
+     op: PostItem
+     table = <LIST_IMPORT_RUNS>
+     item/Title = @concat( 'TRACE Intake ', outputs('Triggered_Batch_Key') )
+     item/FileName = Multiple CSV Batch
+     item/RunDate_x002f_Time = @utcNow()
+     item/RunID = @outputs('Generate_Run_ID') 
+     item/FolderType/Value = @first(body('Get_Batch_Staging_Records')?['value'])?['ProcessingCycle']?['Value']
+     item/RowsRead = 0
+     item/RowsCreated = 0
+     item/RowsUpdated = 0
+     item/RowsSkipped = 0
+     item/RowsFailed = 0
+     item/RunStatus/Value = Started
+     item/Notes = Batch claimed from QV_File_Batch_Staging and queued for processing.
+     item/HistoricalMatches = 0
+     item/DuplicateRows = 0
+     item/SourceFileGroup = @variables('SourceFileGroup')
+  ## Retrieve_Batch_Files [Foreach] runAfter={'Create_Import_Run_Log': ['Succeeded']}
+    ## Get_CSV_File_Content [OpenApiConnection] runAfter={}
+       op: GetFileContent
+       id = @items('Retrieve_Batch_Files')?['SharePointFileIdentifier']
+       inferContentType = true
+    ## CSV_Text [Compose] runAfter={'Get_CSV_File_Content': ['Succeeded']}
+       inputs: @base64ToString( outputs('Get_CSV_File_Content')?['body']?['$content'] )
+    ## Is_Partition_0_File [If] runAfter={'CSV_Text': ['Succeeded']}
+       expression: {"and": [{"equals": ["@items('Retrieve_Batch_Files')?['FileRole']?['Value']", "Source Partition 0"]}]}
+      ## Store_Partition_0_CSV [SetVariable] runAfter={}
+         inputs: {"name": "Partition0CSV", "value": "@outputs('CSV_Text')"}
+      -- ELSE
+    ## Is_Partition_1_File [If] runAfter={'Is_Partition_0_File': ['Succeeded']}
+       expression: {"and": [{"equals": ["@items('Retrieve_Batch_Files')?['FileRole']?['Value']", "Source Partition 1"]}]}
+      ## Store_Partition_1_CSV [SetVariable] runAfter={}
+         inputs: {"name": "Partition1CSV", "value": "@outputs('CSV_Text')"}
+      -- ELSE
+    ## Is_Partition_2_File [If] runAfter={'Is_Partition_1_File': ['Succeeded']}
+       expression: {"and": [{"equals": ["@items('Retrieve_Batch_Files')?['FileRole']?['Value']", "Source Partition 2"]}]}
+      ## Store_Partition_2_CSV [SetVariable] runAfter={}
+         inputs: {"name": "Partition2CSV", "value": "@outputs('CSV_Text')"}
+      -- ELSE
+    ## Is_Outbound_File [If] runAfter={'Is_Partition_2_File': ['Succeeded']}
+       expression: {"and": [{"equals": ["@items('Retrieve_Batch_Files')?['FileRole']?['Value']", "Outbound Status"]}]}
+      ## Store_Outbound_CSV [SetVariable] runAfter={}
+         inputs: {"name": "OutboundCSV", "value": "@outputs('CSV_Text')"}
+      -- ELSE
+  ## Validate_Required_CSV_Files [If] runAfter={'Retrieve_Batch_Files': ['Succeeded']}
+     expression: {"and": [{"equals": ["@and(\r\n not(empty(variables('Partition0CSV'))),\r\n not(empty(variables('Partition1CSV'))),\r\n not(empty(variables('OutboundCSV')))\r\n)", "@true"]}]}
+    -- ELSE
+    ## Stop_-_Required_CSV_Content_Missing [Terminate] runAfter={}
+       inputs: {"runStatus": "Failed", "runError": {"message": "One or more required CSV files were retrieved but not stored in the expected variable."}}
+  ## Partition_0_Lines [Compose] runAfter={'Validate_Required_CSV_Files': ['Succeeded']}
+     inputs: @split( replace( variables('Partition0CSV'), decodeUriComponent('%0D'), '' ), decodeUriComponent('%0A') )
+  ## Partition_0_Data_Lines [Query] runAfter={'Partition_0_Lines': ['Succeeded']}
+     inputs: {"from": "@skip(outputs('Partition_0_Lines'), 1)", "where": "@not(empty(trim(item())))"}
+  ## Partition_1_Lines [Compose] runAfter={'Partition_0_Data_Lines': ['Succeeded']}
+     inputs: @split( replace( variables('Partition1CSV'), decodeUriComponent('%0D'), '' ), decodeUriComponent('%0A') )
+  ## Partition_1_Data_Lines [Query] runAfter={'Partition_1_Lines': ['Succeeded']}
+     inputs: {"from": "@skip(outputs('Partition_1_Lines'), 1)", "where": "@not(empty(trim(item())))"}
+  ## Partition_2_Lines [Compose] runAfter={'Partition_1_Data_Lines': ['Succeeded']}
+     inputs: @if( empty(variables('Partition2CSV')), json('[]'), split( replace( variables('Partition2CSV'), decodeUriComponent('%0D'), '' ), decodeUriComponent('%0A') ) )
+  ## Partition_2_Data_Lines [Query] runAfter={'Partition_2_Lines': ['Succeeded']}
+     inputs: {"from": "@if(\r\n empty(outputs('Partition_2_Lines')),\r\n json('[]'),\r\n skip(outputs('Partition_2_Lines'), 1)\r\n)", "where": "@not(empty(trim(item())))"}
+  ## Outbound_Lines [Compose] runAfter={'Partition_2_Data_Lines': ['Succeeded']}
+     inputs: @split( replace( variables('OutboundCSV'), decodeUriComponent('%0D'), '' ), decodeUriComponent('%0A') )
+  ## Outbound_Data_Lines [Query] runAfter={'Outbound_Lines': ['Succeeded']}
+     inputs: {"from": "@skip(outputs('Outbound_Lines'), 1)", "where": "@not(empty(trim(item())))"}
+  ## CSV_Row_Count_Check [Compose] runAfter={'Parsed_Outbound_Records_Balanced': ['Succeeded']}
+     inputs: @concat( 'Partition 0: ', string(length(body('Partition_0_Data_Lines'))), ' | Partition 1: ', string(length(body('Partition_1_Data_Lines'))), ' | Partition 2: ', string(length(body('Partition_2_Data_Lines'))), ' | Outbound: ', string(length(body('Outbound_Data_Lines'))) ) 
+  ## Total_Rows_Read [Compose] runAfter={'CSV_Row_Count_Check': ['Succeeded']}
+     inputs: @add( add( length(body('Partition_0_Data_Lines')), length(body('Partition_1_Data_Lines')) ), add( length(body('Partition_2_Data_Lines')), length(body('Outbound_Data_Lines')) ) )
+  ## Update_Import_Run_Row_Count [OpenApiConnection] runAfter={'Total_Rows_Read': ['Succeeded']}
+     op: PatchItem
+     table = <LIST_IMPORT_RUNS>
+     id = @body('Create_Import_Run_Log')?['ID']
+     item/Title = @body('Create_Import_Run_Log')?['Title']
+     item/FileName = @body('Create_Import_Run_Log')?['FileName']
+     item/RunDate_x002f_Time = @body('Create_Import_Run_Log')?['RunDate_x002f_Time']
+     item/RunID = @outputs('Generate_Run_ID')
+     item/FolderType/Value = @body('Create_Import_Run_Log')?['FolderType']?['Value']
+     item/RowsRead = @outputs('Total_Rows_Read')
+     item/RowsCreated = 0
+     item/RowsUpdated = 0
+     item/RowsSkipped = 0
+     item/RowsFailed = 0
+     item/RunStatus/Value = Started
+     item/Notes = @body('Create_Import_Run_Log')?['Notes']
+     item/HistoricalMatches = 0
+     item/DuplicateRows = 0
+     item/SourceFileGroup = @variables('SourceFileGroup')
+  ## Combined_Source_Data_Lines [Compose] runAfter={'Update_Import_Run_Row_Count': ['Succeeded']}
+     inputs: @union( union( body('Partition_0_Data_Lines'), body('Partition_1_Data_Lines') ), body('Partition_2_Data_Lines') )
+  ## Source_Tracking_Numbers [Select] runAfter={'Combined_Source_Data_Lines': ['Succeeded']}
+     inputs: {"from": "@outputs('Combined_Source_Data_Lines')", "select": "@toUpper(\r\n replace(\r\n trim(\r\n first(\r\n split(item(), ',')\r\n )\r\n ),\r\n '\"',\r\n ''\r\n )\r\n)"}
+  ## Unique_Source_Tracking_Numbers [Compose] runAfter={'Source_Tracking_Numbers': ['Succeeded']}
+     inputs: @union( body('Source_Tracking_Numbers'), body('Source_Tracking_Numbers') )
+  ## Valid_Source_Tracking_Numbers [Query] runAfter={'Unique_Source_Tracking_Numbers': ['Succeeded']}
+     inputs: {"from": "@outputs('Unique_Source_Tracking_Numbers')", "where": "@not(empty(trim(item())))"}
+  ## Duplicate_Source_Tracking_Count [Compose] runAfter={'Valid_Source_Tracking_Numbers': ['Succeeded']}
+     inputs: @sub( length(body('Source_Tracking_Numbers')), length(body('Valid_Source_Tracking_Numbers')) )
+  ## Outbound_Tracking_Numbers [Select] runAfter={'Duplicate_Source_Tracking_Count': ['Succeeded']}
+     inputs: {"from": "@body('Outbound_Data_Lines')", "select": "@toUpper(\r\n replace(\r\n trim(\r\n first(\r\n split(item(), ',')\r\n )\r\n ),\r\n '\"',\r\n ''\r\n )\r\n)"}
+  ## Unique_Outbound_Tracking_Numbers [Compose] runAfter={'Remove_Blank_Outbound_Tracking_Numbers': ['Succeeded']}
+     inputs: @union( body('Remove_Blank_Outbound_Tracking_Numbers'), body('Remove_Blank_Outbound_Tracking_Numbers') )
+  ## Valid_Outbound_Tracking_Numbers [Query] runAfter={'Unique_Outbound_Tracking_Numbers': ['Succeeded']}
+     inputs: {"from": "@outputs('Unique_Outbound_Tracking_Numbers')", "where": "@not(empty(trim(item())))"}
+  ## Duplicate_Outbound_Tracking_Count [Compose] runAfter={'Valid_Outbound_Tracking_Numbers': ['Succeeded']}
+     inputs: @sub( length( body('Remove_Blank_Outbound_Tracking_Numbers') ), length( outputs('Unique_Outbound_Tracking_Numbers') ) )
+  ## Outbound_Tracking_Numbers_Found_in_Source [Query] runAfter={'Duplicate_Outbound_Tracking_Count': ['Succeeded']}
+     inputs: {"from": "@body('Valid_Outbound_Tracking_Numbers')", "where": "@contains(\n body('Valid_Source_Tracking_Numbers'),\n item()\n)"}
+  ## Outbound_Tracking_Numbers_Missing_from_Source [Query] runAfter={'Classified_Tracking_Result_Count': ['Succeeded']}
+     inputs: {"from": "@body('Valid_Outbound_Tracking_Numbers')", "where": "@not(contains(body('Valid_Source_Tracking_Numbers'), item()))"}
+  ## Valid_Outbound_Tracking_Numbers_Found [If] runAfter={'Tracking_Result_Reconciliation': ['Succeeded']}
+     expression: {"and": [{"equals": ["@and(\r\n greater(\r\n length(\r\n body('Valid_Outbound_Tracking_Numbers')\r\n ),\r\n 0\r\n ),\r\n equals(\r\n outputs('Classified_Tracking_Result_Count'),\r\n length(\r\n body('Valid_Outbound_Tracking_Numbers')\r\n )\r\n ),\r\n equals(\r\n outputs('Processing_Error_Result_Count'),\r\n 0\r\n )\r\n)", "@true"]}]}
+    -- ELSE
+    ## Stop_-_No_Valid_Outbound_Tracking_Numbers [Terminate] runAfter={}
+       inputs: {"runStatus": "Failed", "runError": {"message": "The outbound report did not contain any valid tracking numbers. No TRACE cases can be evaluated from this batch."}}
+  ## Trace_Match_Count_Check [Compose] runAfter={'Outbound_Volume_Monitoring': ['Succeeded']}
+     inputs: @add( add( outputs('Active_Match_Result_Count'), outputs('Historical_Match_Result_Count') ), outputs('New_Case_Required_Result_Count') )
+  ## Trace_Match_Counts_Balanced [If] runAfter={'Trace_Match_Count_Check': ['Succeeded']}
+     expression: {"and": [{"equals": ["@and(\r\n equals(\r\n outputs('Classified_Tracking_Result_Count'),\r\n length(\r\n body('Valid_Outbound_Tracking_Numbers')\r\n )\r\n ),\r\n equals(\r\n outputs('Processing_Error_Result_Count'),\r\n 0\r\n )\r\n)", "@true"]}]}
+    -- ELSE
+    ## Stop_-_Trace_Match_Counts_Unbalanced [Terminate] runAfter={}
+       inputs: {"runStatus": "Failed", "runError": {"message": "The active, historical, and new-case counts do not equal the total number of evaluated outbound tracking numbers."}}
+  ## New_Case_Results_Balanced [If] runAfter={'Trace_Match_Counts_Balanced': ['Succeeded']}
+     expression: {"and": [{"equals": ["@equals(\r\n outputs('New_Case_Required_Result_Count'),\r\n length(\r\n body('Filter_New_Case_Required_Results')\r\n )\r\n)", "@true"]}]}
+    -- ELSE
+    ## Stop_-_New_Case_Results_Unbalanced [Terminate] runAfter={}
+       inputs: {"runStatus": "Failed", "runError": {"message": "The number of New Case Required result records does not match the calculated new-case count."}}
+  ## New_Cases_Needed [If] runAfter={'Active_Case_Updates_Balanced': ['Succeeded']}
+     expression: {"and": [{"greater": ["@outputs('New_Case_Required_Result_Count')", 0]}]}
+    ## Find_Today_Case_Counter [OpenApiConnection] runAfter={}
+       op: GetItems
+       table = <LIST_CASE_COUNTER>
+       $filter = @concat( 'Title eq ''', variables('CaseDateKey'), '''' )
+       $top = 1
+    ## Today_Case_Counter_Found [If] runAfter={'Find_Today_Case_Counter': ['Succeeded']}
+       expression: {"and": [{"greater": ["@length(body('Find_Today_Case_Counter')?['value'])", 0]}]}
+      ## Set_Existing_Counter_Item_ID [SetVariable] runAfter={}
+         inputs: {"name": "CounterItemID", "value": "@int(\r\n first(\r\n body('Find_Today_Case_Counter')?['value']\r\n )?['ID']\r\n)"}
+      ## Set_Existing_Case_Sequence [SetVariable] runAfter={'Set_Existing_Counter_Item_ID': ['Succeeded']}
+         inputs: {"name": "CurrentCaseSequence", "value": "@int(\r\n coalesce(\r\n first(\r\n body('Find_Today_Case_Counter')?['value']\r\n )?['LastSequence'],\r\n 0\r\n )\r\n)"}
+      -- ELSE
+      ## Create_Today_Case_Counter [OpenApiConnection] runAfter={}
+         op: PostItem
+         table = <LIST_CASE_COUNTER>
+         item/Title = @variables('CaseDateKey') 
+         item/LastSequence = 0
+         item/LastAutomationRunID = @outputs('Generate_Run_ID')
+         item/Notes = Daily case-number counter created automatically.
+      ## Set_New_Counter_Item_ID [SetVariable] runAfter={'Create_Today_Case_Counter': ['Succeeded']}
+         inputs: {"name": "CounterItemID", "value": "@int(\r\n body('Create_Today_Case_Counter')?['ID']\r\n)"}
+      ## Set_New_Case_Sequence [SetVariable] runAfter={'Set_New_Counter_Item_ID': ['Succeeded']}
+         inputs: {"name": "CurrentCaseSequence", "value": 0}
+    ## Create_New_Trace_Cases [Foreach] runAfter={'Today_Case_Counter_Found': ['Succeeded']}
+      ## Increment_Current_Case_Sequence [IncrementVariable] runAfter={'Current_New_Case_Parsed_Outbound_Record': ['Succeeded']}
+         inputs: {"name": "CurrentCaseSequence", "value": 1}
+      ## Current_Trace_ID [Compose] runAfter={'Set_Last_Case_Number_Assigned': ['Succeeded']}
+         inputs: @concat( 'TRC-', guid() )
+      ## Reserve_Current_Case_Number [OpenApiConnection] runAfter={'Current_Trace_ID': ['Succeeded']}
+         op: PatchItem
+         table = <LIST_CASE_COUNTER>
+         id = @variables('CounterItemID')
+         item/Title = @variables('CaseDateKey')
+         item/LastSequence = @variables('CurrentCaseSequence')
+         item/LastUpdated = @utcNow()
+         item/LastCaseNumber = @concat( replace( variables('CaseDateKey'), '-', '' ), formatNumber( variables('CurrentCaseSequence'), '000' ) )
+         item/LastAutomationRunID = @outputs('Generate_Run_ID')
+         item/Notes = Case number reserved automatically during TRACE intake.
+      ## Create_New_Active_Trace [OpenApiConnection] runAfter={'Reserve_Current_Case_Number': ['Succeeded']}
+         op: PostItem
+         table = <LIST_TRACE_WORKFLOW>
+         item/TraceID = @outputs('Current_Trace_ID')
+         item/TrackingNumber = @items('Create_New_Trace_Cases')?['field_3']
+         item/CaseNumber = @outputs('Current_Case_Number')
+         item/PIIPresent = false
+         item/ClaimRequired = false
+         item/RecipientOverride = false
+         item/ContactAttemptCount = 0
+         item/Title = @concat( outputs('Current_Case_Number'), ' | ', items('Create_New_Trace_Cases')?['field_3'] )
+         item/CaseRiskType/Value = None
+         item/TraceWorkflowStatus/Value = Needs Review
+         item/Priority/Value = Normal
+         item/LastAction = New trace created automatically from the current intake batch.
+         item/NextAction/Value = Review Trace
+         item/PIIReviewStatus/Value = Not Required
+         item/OneTrustFormStatus/Value = Not Required
+         item/EmailEligible = false
+         item/ClaimWorkflowStatus/Value = Not Required
+         item/ContactSource/Value = None
+         item/ResponseStatus/Value = Not Contacted
+         item/CarrierResolutionType/Value = None
+         item/CarrierStatus = @outputs('Current_New_Case_Parsed_Outbound_Record')?['CarrierStatus']
+         item/CarrierStatusDescription = @outputs('Current_New_Case_Parsed_Outbound_Record')?['CarrierStatusDescription']
+         item/ExceptionDescription = @outputs('Current_New_Case_Parsed_Outbound_Record')?['ExceptionDescription']
+         item/ExceptionResolution = @outputs('Current_New_Case_Parsed_Outbound_Record')?['ExceptionResolution']
+         item/ScheduledDeliveryDate = @if( empty( outputs('Current_New_Case_Parsed_Outbound_Record')?['ScheduledDeliveryDate'] ), null, outputs('Current_New_Case_Parsed_Outbound_Record')?['ScheduledDeliveryDate'] )
+         item/LastSourceUpdateDate = @utcNow()
+         item/LastImportRunID = @outputs('Generate_Run_ID')
+         item/SourceProcessingCycle/Value = @first(body('Get_Batch_Staging_Records')?['value'])?['ProcessingCycle']?['Value']
+         item/SourceCreatedDate = @utcNow()
+      ## Increment_Created_Case_Count [IncrementVariable] runAfter={'Complete_New_Case_Processing_Result': ['Succeeded']}
+         inputs: {"name": "CreatedCaseCount", "value": 1}
+      ## First_Case_Number_Is_Blank [If] runAfter={'Current_Case_Number': ['Succeeded']}
+         expression: {"and": [{"equals": ["@empty(variables('FirstCaseNumberAssigned'))", "@true"]}]}
+        ## Set_First_Case_Number_Assigned [SetVariable] runAfter={}
+           inputs: {"name": "FirstCaseNumberAssigned", "value": "@outputs('Current_Case_Number')"}
+        -- ELSE
+      ## Set_Last_Case_Number_Assigned [SetVariable] runAfter={'First_Case_Number_Is_Blank': ['Succeeded']}
+         inputs: {"name": "LastCaseNumberAssigned", "value": "@outputs('Current_Case_Number')"}
+      ## Current_Case_Number [Compose] runAfter={'Increment_Current_Case_Sequence': ['Succeeded']}
+         inputs: @concat( replace( variables('CaseDateKey'), '-', '' ), formatNumber( variables('CurrentCaseSequence'), '000' ) )
+      ## Find_New_Case_Parsed_Outbound_Record [Query] runAfter={}
+         inputs: {"from": "@outputs('Parsed_Outbound_Records')", "where": "@equals(\n item()?['TrackingNumber'],\n items('Create_New_Trace_Cases')?['field_3']\n)"}
+      ## Current_New_Case_Parsed_Outbound_Record [Compose] runAfter={'Find_New_Case_Parsed_Outbound_Record': ['Succeeded']}
+         inputs: @first( body('Find_New_Case_Parsed_Outbound_Record') )
+      ## Complete_New_Case_Processing_Result [OpenApiConnection] runAfter={'Create_New_Active_Trace': ['Succeeded']}
+         op: PatchItem
+         table = <LIST_RESULTS>
+         id = @items('Create_New_Trace_Cases')?['ID']
+         item/Title = @items('Create_New_Trace_Cases')?['Title']
+         item/field_1 = @items('Create_New_Trace_Cases')?['field_1']
+         item/field_2 = @items('Create_New_Trace_Cases')?['field_2']
+         item/field_3 = @items('Create_New_Trace_Cases')?['field_3']
+         item/field_6 = @items('Create_New_Trace_Cases')?['field_6']
+         item/field_8 = @utcNow()
+         item/field_4/Value = New Case Required
+         item/field_5 = @outputs('Create_New_Active_Trace')?['body/ID']
+         item/field_9 = @outputs('Current_Case_Number')
+    ## All_New_Cases_Created [If] runAfter={'Create_New_Trace_Cases': ['Succeeded']}
+       expression: {"and": [{"equals": ["@equals(\r\n variables('CreatedCaseCount'),\r\n outputs('New_Case_Required_Result_Count')\r\n)", "@true"]}]}
+      -- ELSE
+      ## Stop_-_New_Case_Creation_Incomplete [Terminate] runAfter={}
+         inputs: {"runStatus": "Failed", "runError": {"message": "One or more new cases were identified but were not successfully created in Trace_Workflow."}}
+    ## New_Case_Creation_Summary [Compose] runAfter={'All_New_Cases_Created': ['Succeeded']}
+       inputs: @concat( 'New Cases Identified: ', string( outputs('New_Case_Required_Result_Count') ), ' | New Cases Created: ', string( variables('CreatedCaseCount') ), ' | Final Daily Sequence: ', string( variables('CurrentCaseSequence') ) )
+    -- ELSE
+    ## No_New_Cases_Required [Compose] runAfter={}
+       inputs: All evaluated tracking numbers already exist in the active or historical workflow.
+  ## Update_Import_Run_Match_Results [OpenApiConnection] runAfter={'New_Cases_Needed': ['Succeeded']}
+     op: PatchItem
+     table = <LIST_IMPORT_RUNS>
+     id = @body('Create_Import_Run_Log')?['ID']
+     item/Title = @body('Create_Import_Run_Log')?['Title']
+     item/FileName = @body('Create_Import_Run_Log')?['FileName']
+     item/RunDate_x002f_Time = @body('Create_Import_Run_Log')?['RunDate_x002f_Time']
+     item/RunID = @outputs('Generate_Run_ID')
+     item/FolderType/Value = @body('Create_Import_Run_Log')?['FolderType']?['Value']
+     item/RowsRead = @outputs('Total_Rows_Read')
+     item/RowsCreated = @variables('CreatedCaseCount')
+     item/RowsUpdated = @outputs('Active_Match_Result_Count')
+     item/RowsSkipped = @outputs('Historical_Match_Result_Count')
+     item/RowsFailed = @outputs('Processing_Error_Result_Count')
+     item/RunStatus/Value = Started
+     item/Notes = @concat( 'Evaluated ', string( length( body('Valid_Outbound_Tracking_Numbers') ) ), ' unique tracking number(s). Active records updated: ', string( outputs('Active_Match_Result_Count') ), '; historical matches: ', string( outputs('Historical_Match_Result_Count') ), '; new cases required: ', string( outputs('New_Case_Required_Result_Count') ), '; new cases created: ', string( variables('CreatedCaseCount') ), '; processing errors: ', string( outputs('Processing_Error_Result_Count') ), '; source du…
+     item/HistoricalMatches = @outputs('Historical_Match_Result_Count')
+     item/DuplicateRows = @add( outputs('Duplicate_Source_Tracking_Count'), outputs('Duplicate_Outbound_Tracking_Count') )
+     item/FirstCaseNumberAssigned = @variables('FirstCaseNumberAssigned')
+     item/LastCaseNumberAssigned = @variables('LastCaseNumberAssigned')
+     item/SourceFileGroup = @variables('SourceFileGroup')
+  ## Active_Case_Updates_Balanced [If] runAfter={'New_Case_Results_Balanced': ['Succeeded']}
+     expression: {"and": [{"equals": ["@equals(\r\n outputs('Active_Match_Result_Count'),\r\n length(\r\n body('Filter_Active_Updated_Results')\r\n )\r\n)", "@true"]}]}
+    -- ELSE
+    ## Stop_-_Active_Case_Updates_Incomplete [Terminate] runAfter={}
+       inputs: {"runStatus": "Failed", "runError": {"message": "One or more active cases were identified but were not successfully refreshed in Trace_Workflow."}}
+  ## Scope_-_Finalize_Successful_Batch [Scope] runAfter={'Update_Import_Run_Match_Results': ['Succeeded']}
+    ## Run_Completed_Date_Time [Compose] runAfter={}
+       inputs: @utcNow()
+    ## Processed_Folder_Path [Compose] runAfter={'Run_Completed_Date_Time': ['Succeeded']}
+       inputs: @concat( '/QV Automation Files/Processed/', first( body('Get_Batch_Staging_Records')?['value'] )?['ProcessingCycle']?['Value'] )
+    ## Move_Processed_Batch_Files [Foreach] runAfter={'Processed_Folder_Path': ['Succeeded']}
+      ## Move_Current_File_to_Processed [OpenApiConnection] runAfter={}
+         op: MoveFileAsync
+         parameters/sourceFileId = @items('Move_Processed_Batch_Files')?['SharePointFileIdentifier']
+         parameters/destinationDataset = https://<tenant>.sharepoint.com/sites/<site>
+         parameters/destinationFolderPath = @outputs('Processed_Folder_Path')
+         parameters/nameConflictBehavior = 0
+    ## Finalize_Import_Run [OpenApiConnection] runAfter={'Move_Processed_Batch_Files': ['Succeeded']}
+       op: PatchItem
+       table = <LIST_IMPORT_RUNS>
+       id = @body('Create_Import_Run_Log')?['ID']
+       item/Title = @body('Create_Import_Run_Log')?['Title']
+       item/FileName = @body('Create_Import_Run_Log')?['FileName']
+       item/RunDate_x002f_Time = @body('Create_Import_Run_Log')?['RunDate_x002f_Time']
+       item/RunID = @outputs('Generate_Run_ID')
+       item/FolderType/Value = @body('Create_Import_Run_Log')?['FolderType']?['Value']
+       item/RowsRead = @outputs('Total_Rows_Read')
+       item/RowsCreated = @variables('CreatedCaseCount')
+       item/RowsUpdated = @outputs('Active_Match_Result_Count')
+       item/RowsSkipped = @outputs('Historical_Match_Result_Count')
+       item/RowsFailed = @outputs('Processing_Error_Result_Count')
+       item/RunStatus/Value = Completed
+       item/ErrorMessage = @null
+       item/ProcessedFilePath = @outputs('Processed_Folder_Path')
+       item/Notes = @concat( 'Active records updated: ', string( outputs('Active_Match_Result_Count') ), '. New cases required: ', string( outputs('New_Case_Required_Result_Count') ), '. New cases created: ', string( variables('CreatedCaseCount') ), '. Historical matches: ', string( outputs('Historical_Match_Result_Count') ), '. Processing errors: ', string( outputs('Processing_Error_Result_Count') ), '.' )
+       item/HistoricalMatches = @outputs('Historical_Match_Result_Count')
+       item/DuplicateRows = @add( outputs('Duplicate_Source_Tracking_Count'), outputs('Duplicate_Outbound_Tracking_Count') )
+       item/FirstCaseNumberAssigned = @variables('FirstCaseNumberAssigned')
+       item/LastCaseNumberAssigned = @variables('LastCaseNumberAssigned')
+       item/RunCompletedDate_x002f_Time = @outputs('Run_Completed_Date_Time')
+       item/SourceFileGroup = @variables('SourceFileGroup')
+    ## Complete_Batch_Staging_Records [Foreach] runAfter={'Finalize_Import_Run': ['Succeeded']}
+      ## Mark_Staging_Record_Completed [OpenApiConnection] runAfter={}
+         op: PatchItem
+         table = <LIST_STAGING>
+         id = @items('Complete_Batch_Staging_Records')?['ID']
+         item/Title = @items('Complete_Batch_Staging_Records')?['Title']
+         item/FileName = @items('Complete_Batch_Staging_Records')?['FileName']
+         item/BatchKey = @items('Complete_Batch_Staging_Records')?['BatchKey']
+         item/SharePointFileIdentifier = @items('Complete_Batch_Staging_Records')?['SharePointFileIdentifier']
+         item/FileReceivedDate = @items('Complete_Batch_Staging_Records')?['FileReceivedDate']
+         item/FileRole/Value = @items('Complete_Batch_Staging_Records')?['FileRole']?['Value']
+         item/ProcessingCycle/Value = @items('Complete_Batch_Staging_Records')?['ProcessingCycle']?['Value']
+         item/StagingStatus/Value = Completed
+         item/RunID = @outputs('Generate_Run_ID')
+         item/ProcessedDate = @outputs('Run_Completed_Date_Time') 
+         item/ErrorMessage = @null
+         item/Notes = Batch processing completed successfully.
+  ## Scope_-_Handle_Batch_Failure [Scope] runAfter={'Scope_-_Finalize_Successful_Batch': ['Failed', 'TimedOut', 'Skipped']}
+    ## Failure_Date_Time [Compose] runAfter={}
+       inputs: @utcNow()
+    ## Failure_Details [Compose] runAfter={'Failure_Date_Time': ['Succeeded']}
+       inputs: @string( result('Scope_-_Finalize_Successful_Batch') )
+    ## Fail_Import_Run [OpenApiConnection] runAfter={'Failure_Details': ['Succeeded']}
+       op: PatchItem
+       table = <LIST_IMPORT_RUNS>
+       id = @body('Create_Import_Run_Log')?['ID']
+       item/Title = @body('Create_Import_Run_Log')?['Title']
+       item/FileName = @body('Create_Import_Run_Log')?['FileName']
+       item/RunDate_x002f_Time = @body('Create_Import_Run_Log')?['RunDate_x002f_Time']
+       item/RunID = @outputs('Generate_Run_ID')
+       item/FolderType/Value = @body('Create_Import_Run_Log')?['FolderType']?['Value']
+       item/RowsRead = @outputs('Total_Rows_Read')
+       item/RowsCreated = @variables('CreatedCaseCount')
+       item/RowsUpdated = @outputs('Active_Match_Result_Count')
+       item/RowsSkipped = @outputs('Historical_Match_Result_Count')
+       item/RowsFailed = @if( greater( outputs('Processing_Error_Result_Count'), 0 ), outputs('Processing_Error_Result_Count'), 1 )
+       item/RunStatus/Value = Failed
+       item/ErrorMessage = @substring( outputs('Failure_Details'), 0, min( length(outputs('Failure_Details')), 30000 ) )
+       item/ProcessedFilePath = @null
+       item/Notes = @concat( 'Active records updated before failure: ', string( outputs('Active_Match_Result_Count') ), '. New cases created before failure: ', string( variables('CreatedCaseCount') ), '. Historical matches: ', string( outputs('Historical_Match_Result_Count') ), '. Processing errors: ', string( outputs('Processing_Error_Result_Count') ), '.' )
+       item/HistoricalMatches = @outputs('Historical_Match_Result_Count')
+       item/DuplicateRows = @add( outputs('Duplicate_Source_Tracking_Count'), outputs('Duplicate_Outbound_Tracking_Count') )
+       item/FirstCaseNumberAssigned = @variables('FirstCaseNumberAssigned')
+       item/LastCaseNumberAssigned = @variables('LastCaseNumberAssigned')
+       item/RunCompletedDate_x002f_Time = @outputs('Failure_Date_Time')
+       item/SourceFileGroup = @variables('SourceFileGroup')
+    ## Fail_Batch_Staging_Records [Foreach] runAfter={'Fail_Import_Run': ['Succeeded']}
+      ## Mark_Staging_Record_Failed [OpenApiConnection] runAfter={}
+         op: PatchItem
+         table = <LIST_STAGING>
+         id = @items('Fail_Batch_Staging_Records')?['ID']
+         item/Title = @items('Fail_Batch_Staging_Records')?['Title']
+         item/FileName = @items('Fail_Batch_Staging_Records')?['FileName']
+         item/BatchKey = @items('Fail_Batch_Staging_Records')?['BatchKey']
+         item/SharePointFileIdentifier = @items('Fail_Batch_Staging_Records')?['SharePointFileIdentifier']
+         item/FileReceivedDate = @items('Fail_Batch_Staging_Records')?['FileReceivedDate']
+         item/FileRole/Value = @items('Fail_Batch_Staging_Records')?['FileRole']?['Value']
+         item/ProcessingCycle/Value = @items('Fail_Batch_Staging_Records')?['ProcessingCycle']?['Value']
+         item/StagingStatus/Value = Failed
+         item/RunID = @outputs('Generate_Run_ID')
+         item/ProcessedDate = @outputs('Failure_Date_Time')
+         item/ErrorMessage = @substring( outputs('Failure_Details'), 0, min( length(outputs('Failure_Details')), 30000 ) )
+         item/Notes = Batch finalization failed. Review the ErrorMessage and Power Automate run history before reprocessing.
+  ## Outbound_Volume_Monitoring [If] runAfter={'Valid_Outbound_Tracking_Numbers_Found': ['Succeeded']}
+     expression: {"and": [{"lessOrEquals": ["@length(body('Valid_Outbound_Tracking_Numbers'))", 25]}]}
+    -- ELSE
+    ## Full-Volume_Batch_Accepted [Compose] runAfter={}
+       inputs: Full-volume processing enabled. Batch exceeded the former pilot threshold and was accepted for processing.
+  ## Parsed_Outbound_Records [Compose] runAfter={'Parse_Outbound_CSV': ['Succeeded']}
+     inputs: @body('Parse_Outbound_CSV')?['result']
+  ## Parsed_Outbound_Record_Count [Compose] runAfter={'QV_Batch_Promotion_Succeeded': ['Succeeded']}
+     inputs: @length( body('Parse_Outbound_CSV')?['result'] )
+  ## Parsed_Outbound_Records_Balanced [If] runAfter={'Parsed_Outbound_Record_Count': ['Succeeded']}
+     expression: {"and": [{"equals": ["@outputs('Parsed_Outbound_Record_Count')", "@length(body('Outbound_Data_Lines'))"]}]}
+    -- ELSE
+    ## Stop_-_Parsed_Outbound_Records_Unbalanced [Terminate] runAfter={}
+       inputs: {"runStatus": "Failed", "runError": {"message": "The Office Script parsed-record count does not match the outbound CSV data-row count. Carrier-field mapping has been stopped to prevent incorrect or incomplete updates."}}
+  ## Normalize_Outbound_Tracking_Numbers [Select] runAfter={'Outbound_Tracking_Numbers': ['Succeeded']}
+     inputs: {"from": "@body('Outbound_Tracking_Numbers')", "select": "@toUpper(\r\n trim(\r\n string(item())\r\n )\r\n)"}
+  ## Remove_Blank_Outbound_Tracking_Numbers [Query] runAfter={'Normalize_Outbound_Tracking_Numbers': ['Succeeded']}
+     inputs: {"from": "@body('Normalize_Outbound_Tracking_Numbers')", "where": "@not(empty(item()))"}
+  ## Evaluate_Outbound_Tracking_Numbers [Foreach] runAfter={'Outbound_Tracking_Numbers_Found_in_Source': ['Succeeded']}
+     runtimeConfiguration: {"concurrency": {"repetitions": 4}}
+    ## Find_Current_Parsed_Outbound_Record [Query] runAfter={}
+       inputs: {"from": "@outputs('Parsed_Outbound_Records')", "where": "@equals(\n item()?['TrackingNumber'],\n items('Evaluate_Outbound_Tracking_Numbers')\n)"}
+    ## Current_Parsed_Outbound_Record_Found [If] runAfter={'Find_Current_Parsed_Outbound_Record': ['Succeeded']}
+       expression: {"and": [{"equals": ["@length(body('Find_Current_Parsed_Outbound_Record'))", 1]}]}
+      ## Find_Active_Trace [OpenApiConnection] runAfter={'Current_Parsed_Outbound_Record': ['Succeeded']}
+         op: GetItems
+         table = <LIST_TRACE_WORKFLOW>
+         $filter = @concat( 'TrackingNumber eq ''', items('Evaluate_Outbound_Tracking_Numbers'), '''' )
+         $top = 1
+      ## Active_Trace_Found [If] runAfter={'Find_Active_Trace': ['Succeeded']}
+         expression: {"and": [{"greater": ["@length(body('Find_Active_Trace')?['value'])", 0]}]}
+        ## Current_Active_Trace_Record [Compose] runAfter={}
+           inputs: @first( body('Find_Active_Trace')?['value'] )
+        ## Refresh_Existing_Active_Trace_Audit [OpenApiConnection] runAfter={'Current_Active_Trace_Record': ['Succeeded']}
+           op: HttpRequest
+           parameters/method = PATCH
+           parameters/uri = @concat( '_api/web/lists/getbytitle(''Trace_Workflow'')/items(', string(outputs('Current_Active_Trace_Record')?['ID']), ')' )
+           parameters/headers = {"IF-MATCH": "*", "Content-Type\n": "application/json;odata=nometadata"}
+           parameters/body = { "CarrierStatus": "@{outputs('Current_Parsed_Outbound_Record')?['CarrierStatus']}", "CarrierStatusDescription": "@{outputs('Current_Parsed_Outbound_Record')?['CarrierStatusDescription']}", "ExceptionDescription": "@{outputs('Current_Parsed_Outbound_Record')?['ExceptionDescription']}", "ExceptionResolution": "@{outputs('Current_Parsed_Outbound_Record')?['ExceptionResolution']}", "ScheduledDeliveryDate": "@{if(empty(outputs('Current_Parsed_Outbound_Record')?['ScheduledDeliveryDate']), null, outpu…
+        ## Write_Active_Updated_Result [OpenApiConnection] runAfter={'Refresh_Existing_Active_Trace_Audit': ['Succeeded']}
+           op: PostItem
+           table = <LIST_RESULTS>
+           item/Title = @concat( outputs('Generate_Run_ID'), '|', items('Evaluate_Outbound_Tracking_Numbers') )
+           item/field_1 = @outputs('Generate_Run_ID')
+           item/field_2 = @first( body('Get_Batch_Staging_Records')?['value'] )?['BatchKey']
+           item/field_3 = @items('Evaluate_Outbound_Tracking_Numbers')
+           item/field_6 = @length( body('Find_Current_Parsed_Outbound_Record') )
+           item/field_8 = @utcNow()
+           item/field_4/Value = Active Updated
+           item/field_5 = @outputs('Current_Active_Trace_Record')?['ID']
+           item/field_9 = @outputs('Current_Active_Trace_Record')?['CaseNumber']
+        -- ELSE
+        ## Find_Historical_Trace [OpenApiConnection] runAfter={}
+           op: GetItems
+           table = <LIST_HISTORICAL>
+           $filter = @concat( 'TrackingNumber eq ''', items('Evaluate_Outbound_Tracking_Numbers'), '''' )
+           $top = 1
+        ## Historical_Trace_Found [If] runAfter={'Find_Historical_Trace': ['Succeeded']}
+           expression: {"and": [{"greater": ["@length(body('Find_Historical_Trace')?['value'])", 0]}]}
+          ## Write_Historical_Match_Result [OpenApiConnection] runAfter={}
+             op: PostItem
+             table = <LIST_RESULTS>
+             item/Title = @concat( outputs('Generate_Run_ID'), '|', items('Evaluate_Outbound_Tracking_Numbers') )
+             item/field_1 = @outputs('Generate_Run_ID')
+             item/field_2 = @first( body('Get_Batch_Staging_Records')?['value'] )?['BatchKey']
+             item/field_3 = @items('Evaluate_Outbound_Tracking_Numbers')
+             item/field_6 = @length( body('Find_Current_Parsed_Outbound_Record') )
+             item/field_8 = @utcNow()
+             item/field_4/Value = Historical Match
+             item/field_5 = @first( body('Find_Historical_Trace')?['value'] )?['ID']
+             item/field_9 = @first( body('Find_Historical_Trace')?['value'] )?['CaseNumber']
+          -- ELSE
+          ## Write_New_Case_Required_Result [OpenApiConnection] runAfter={}
+             op: PostItem
+             table = <LIST_RESULTS>
+             item/Title = @concat( outputs('Generate_Run_ID'), '|', items('Evaluate_Outbound_Tracking_Numbers') )
+             item/field_1 = @outputs('Generate_Run_ID')
+             item/field_2 = @first( body('Get_Batch_Staging_Records')?['value'] )?['BatchKey']
+             item/field_3 = @items('Evaluate_Outbound_Tracking_Numbers')
+             item/field_6 = @length( body('Find_Current_Parsed_Outbound_Record') )
+             item/field_8 = @utcNow()
+             item/field_4/Value = New Case Required
+      ## Current_Parsed_Outbound_Record [Compose] runAfter={}
+         inputs: @first( body('Find_Current_Parsed_Outbound_Record') )
+      -- ELSE
+      ## Write_Parsed_Record_Error_Result [OpenApiConnection] runAfter={}
+         op: PostItem
+         table = <LIST_RESULTS>
+         item/Title = @concat( outputs('Generate_Run_ID'), '|', items('Evaluate_Outbound_Tracking_Numbers') )
+         item/field_1 = @outputs('Generate_Run_ID')
+         item/field_2 = @first( body('Get_Batch_Staging_Records')?['value'] )?['BatchKey']
+         item/field_3 = @items('Evaluate_Outbound_Tracking_Numbers')
+         item/field_6 = @length( body('Find_Current_Parsed_Outbound_Record') )
+         item/field_8 = @utcNow()
+         item/field_4/Value = Parsed Record Error
+         item/field_7 = @concat( 'Expected exactly one parsed outbound record for tracking number ', items('Evaluate_Outbound_Tracking_Numbers'), ', but found ', string( length( body('Find_Current_Parsed_Outbound_Record') ) ), '.' )
+  ## Get_Current_Run_Tracking_Results [OpenApiConnection] runAfter={'Evaluate_Outbound_Tracking_Numbers': ['Succeeded']}
+     runtimeConfiguration: {"paginationPolicy": {"minimumItemCount": 5000}}
+     op: GetItems
+     table = <LIST_RESULTS>
+     $filter = field_1 eq '@{outputs('Generate_Run_ID')}'
+     $orderby = field_3 asc
+     $top = 5000
+  ## Filter_Active_Updated_Results [Query] runAfter={'Get_Current_Run_Tracking_Results': ['Succeeded']}
+     inputs: {"from": "@body('Get_Current_Run_Tracking_Results')?['value']", "where": "@equals(\n item()?['field_4']?['Value'],\n 'Active Updated'\n)"}
+  ## Filter_Historical_Match_Results [Query] runAfter={'Filter_Active_Updated_Results': ['Succeeded']}
+     inputs: {"from": "@body('Get_Current_Run_Tracking_Results')?['value']", "where": "@equals(\n item()?['field_4']?['Value'],\n 'Historical Match'\n)"}
+  ## Filter_New_Case_Required_Results [Query] runAfter={'Filter_Historical_Match_Results': ['Succeeded']}
+     inputs: {"from": "@body('Get_Current_Run_Tracking_Results')?['value']", "where": "@equals(\n item()?['field_4']?['Value'],\n 'New Case Required'\n)"}
+  ## Filter_Processing_Error_Results [Query] runAfter={'Filter_New_Case_Required_Results': ['Succeeded']}
+     inputs: {"from": "@body('Get_Current_Run_Tracking_Results')?['value']", "where": "@or(\n equals(\n item()?['field_4']?['Value'],\n 'Parsed Record Error'\n ),\n equals(\n item()?['field_4']?['Value'],\n 'Processing Failed'\n )\n)"}
+  ## Active_Match_Result_Count [Compose] runAfter={'Filter_Processing_Error_Results': ['Succeeded']}
+     inputs: @length( body('Filter_Active_Updated_Results') )
+  ## Historical_Match_Result_Count [Compose] runAfter={'Active_Match_Result_Count': ['Succeeded']}
+     inputs: @length( body('Filter_Historical_Match_Results') )
+  ## New_Case_Required_Result_Count [Compose] runAfter={'Historical_Match_Result_Count': ['Succeeded']}
+     inputs: @length( body('Filter_New_Case_Required_Results') )
+  ## Processing_Error_Result_Count [Compose] runAfter={'New_Case_Required_Result_Count': ['Succeeded']}
+     inputs: @length( body('Filter_Processing_Error_Results') )
+  ## Classified_Tracking_Result_Count [Compose] runAfter={'Processing_Error_Result_Count': ['Succeeded']}
+     inputs: @add( add( outputs('Active_Match_Result_Count'), outputs('Historical_Match_Result_Count') ), add( outputs('New_Case_Required_Result_Count'), outputs('Processing_Error_Result_Count') ) )
+  ## Tracking_Result_Reconciliation [Compose] runAfter={'Outbound_Tracking_Numbers_Missing_from_Source': ['Succeeded']}
+     inputs: @concat( 'Evaluated: ', string( length( body('Valid_Outbound_Tracking_Numbers') ) ), ' | Classified: ', string( outputs('Classified_Tracking_Result_Count') ), ' | Active Updated: ', string( outputs('Active_Match_Result_Count') ), ' | Historical Matches: ', string( outputs('Historical_Match_Result_Count') ), ' | New Cases Required: ', string( outputs('New_Case_Required_Result_Count') ), ' | Errors: ', string( outputs('Processing_Error_Result_Count') ) )
+  ## Compact_Parsed_Outbound_Records [Select] runAfter={'Parsed_Outbound_Debug_Count': ['Succeeded']}
+     inputs: {"from": "@outputs('Parsed_Outbound_Records')", "select": "@setProperty(\r\n setProperty(\r\n setProperty(\r\n setProperty(\r\n setProperty(\r\n setProperty(\r\n setProperty(\r\n setProperty(\r\n setProperty(\r\n setProperty(\r\n setProperty(\r\n setProperty(\r\n setProperty(\r\n setProperty(\r\n setProperty(\r\n setProperty(\r\n setProperty(\r\n setProperty(\r\n setProperty(\r\n setProperty(\r\n setProperty(\r\n setProperty(\r\n setProperty(\r\n json('{}'),\r\n 'TrackingNumber',\r\n item()?['TrackingNumber']\r\n ),\r\n 'CarrierStatus',\r\n item()?['CarrierStatus']\r\n ),\r\n 'CarrierStatusDescription',\r\n item()?['CarrierStatusDescription']\r\n ),\r\n 'ExceptionDescription',\r\n item()?['E…
+  ## Total_Outbound_Tracking_Count [Compose] runAfter={'Compact_Outbound_Records_Found': ['Succeeded']}
+     inputs: @length( body('Compact_Parsed_Outbound_Records') )
+  ## Tracking_Chunk_Count [Compose] runAfter={'Total_Outbound_Tracking_Count': ['Succeeded']}
+     inputs: @div( add( outputs('Total_Outbound_Tracking_Count'), 99 ), 100 )
+  ## Tracking_Chunk_Indexes [Compose] runAfter={'Tracking_Chunk_Count': ['Succeeded']}
+     inputs: @range( 0, outputs('Tracking_Chunk_Count') )
+  ## Create_Tracking_Processing_Chunks [Foreach] runAfter={'Tracking_Chunk_Indexes': ['Succeeded']}
+    ## Create_Tracking_Chunk_Record [OpenApiConnection] runAfter={}
+       op: PostItem
+       table = <LIST_CHUNKS>
+       item/Title = @concat( outputs('Generate_Run_ID'), '|', formatNumber( add( item(), 1 ), '000' ) )
+       item/field_1 = @outputs('Generate_Run_ID')
+       item/field_2 = @outputs('Triggered_Batch_Key')
+       item/field_3 = @add( item(), 1 )
+       item/field_4 = @mul( item(), 100 )
+       item/field_5 = @min( 100, sub( outputs('Total_Outbound_Tracking_Count'), mul( item(), 100 ) ) )
+       item/field_6 = 0
+       item/field_7 = 0
+       item/field_9 = @string( take( skip( body('Compact_Parsed_Outbound_Records'), mul( item(), 100 ) ), 100 ) )
+       item/field_13 = 0
+       item/TotalChunkCount = @outputs('Tracking_Chunk_Count')
+       item/field_8/Value = Pending
+       item/WorkerLane = @add( mod( item(), 4 ), 1 )
+       item/LaneSequence = @add( div( item(), 4 ), 1 )
+  ## Tracking_Chunks_Queued [Compose] runAfter={'Created_Tracking_Chunk_Count': ['Succeeded']}
+     inputs: @concat( string( outputs('Tracking_Chunk_Count') ), ' tracking chunk(s) created for RunID ', outputs('Generate_Run_ID'), '. Classification will continue through the chunk worker.' )
+  ## Select_Batch_File_IDs [Select] runAfter={'Tracking_Chunks_Queued': ['Succeeded']}
+     inputs: {"from": "@body('Get_Batch_Staging_Records')?['value']", "select": "@item()?['SharePointFileIdentifier']"}
+  ## Select_Batch_File_Names [Select] runAfter={'Select_Batch_File_IDs': ['Succeeded']}
+     inputs: {"from": "@body('Get_Batch_Staging_Records')?['value']", "select": "@item()?['FileName']"}
+  ## QV_Batch_Promotion_Succeeded [If] runAfter={'Run_a_Child_Flow': ['Succeeded']}
+     expression: {"and": [{"equals": ["@equals(\r\n toLower(\r\n string(\r\n outputs('Run_a_Child_Flow')?['body/promotionsucceeded']\r\n )\r\n ),\r\n 'true'\r\n)", "@true"]}]}
+    ## Stop_-_QV_Batch_Published_and_Chunks_Queued [Terminate] runAfter={}
+       inputs: {"runStatus": "Succeeded"}
+    -- ELSE
+    ## Stop_-_QV_Batch_Promotion_Failed [Terminate] runAfter={}
+       inputs: {"runStatus": "Failed"}
+  ## Run_a_Child_Flow [Workflow] runAfter={'Select_Batch_File_Names': ['Succeeded']}
+     op: None
+     inputs: {"body": {"text_1": "@outputs('Triggered_Batch_Key')", "text_2": "@first(\r\n body('Get_Batch_Staging_Records')?['value']\r\n)?['ProcessingCycle']?['Value']", "text_3": "@string(\r\n outputs('Tracking_Chunk_Count')\r\n)", "text_4": "@string(\r\n outputs('Tracking_Chunk_Count')\r\n)", "text_5": "@string(\r\n body('Select_Batch_File_IDs')\r\n)", "text_6": "@string(\r\n body('Select_Batch_File_Names')\r\n)", "text": "@outputs('Generate_Run_ID')"}}
+  ## Parse_Outbound_CSV [OpenApiConnection] runAfter={'First_Outbound_Data_Row': ['Succeeded']}
+     op: RunScriptProd
+     source = groups/<M365_GROUP_ID>
+     drive = <DRIVE_ID>
+     file = <WORKBOOK_FILE_ID>
+     scriptId = <OFFICE_SCRIPT_ID>
+     ScriptParameters/csvText = @variables('OutboundCSV')
+  ## Parsed_Outbound_Debug_Count [Compose] runAfter={'Parsed_Outbound_Records': ['Succeeded']}
+     inputs: @length( outputs('Parsed_Outbound_Records') )
+  ## Compact_Outbound_Debug_Count [Compose] runAfter={'Compact_Parsed_Outbound_Records': ['Succeeded']}
+     inputs: @length( body('Compact_Parsed_Outbound_Records') )
+  ## Compact_Outbound_Records_Found [If] runAfter={'Compact_Outbound_Debug_Count': ['Succeeded']}
+     expression: {"and": [{"greater": ["@outputs('Compact_Outbound_Debug_Count')", 0]}]}
+    -- ELSE
+    ## Terminate [Terminate] runAfter={}
+       inputs: {"runStatus": "Failed", "runError": {"message": "Parse Outbound CSV returned no compact outbound records. Chunk creation and batch promotion were stopped."}}
+  ## Created_Tracking_Chunk_Count [Compose] runAfter={'Create_Tracking_Processing_Chunks': ['Succeeded']}
+     inputs: @outputs('Tracking_Chunk_Count')
+  ## Outbound_CSV_Header_Check [Compose] runAfter={'Outbound_Data_Lines': ['Succeeded']}
+     inputs: @first( split( replace( variables('OutboundCSV'), decodeUriComponent('%0D'), '' ), decodeUriComponent('%0A') ) )
+  ## Outbound_CSV_Line_Count [Compose] runAfter={'Outbound_CSV_Character_Count': ['Succeeded']}
+     inputs: @length( split( replace( variables('OutboundCSV'), decodeUriComponent('%0D'), '' ), decodeUriComponent('%0A') ) )
+  ## Outbound_CSV_Character_Count [Compose] runAfter={'Outbound_CSV_Header_Check': ['Succeeded']}
+     inputs: @length( variables('OutboundCSV') )
+  ## First_Outbound_Data_Row [Compose] runAfter={'Outbound_CSV_Line_Count': ['Succeeded']}
+     inputs: @first( skip( split( replace( variables('OutboundCSV'), decodeUriComponent('%0D'), '' ), decodeUriComponent('%0A') ), 1 ) )
+  -- ELSE
+  ## Batch_Already_Claimed [Compose] runAfter={}
+     inputs: Another flow run has already assigned a RunID to this batch. No processing was started.
+  ## Stop_-_Batch_Already_Claimed [Terminate] runAfter={'Batch_Already_Claimed': ['Succeeded']}
+     inputs: {"runStatus": "Succeeded"}
+## Batch_Records_Found [If] runAfter={'Find_Claimed_Batch_Records': ['Succeeded']}
+   expression: {"and": [{"greater": ["@length(body('Get_Batch_Staging_Records')?['value'])", 0]}]}
+  -- ELSE
+  ## Stop_-_Batch_Records_Not_Found [Terminate] runAfter={}
+     inputs: {"runStatus": "Failed", "runError": {"message": "No staging records were found for the triggered BatchKey."}}
+## Initialize_Source_File_Group [InitializeVariable] runAfter={'Get_Batch_Staging_Records': ['Succeeded']}
+   inputs: {"variables": [{"name": "SourceFileGroup", "type": "string"}]}
+## Find_Claimed_Batch_Records [Query] runAfter={'Initialize_Last_Case_Number_Assigned': ['Succeeded']}
+   inputs: {"from": "@body('Get_Batch_Staging_Records')?['value']", "where": "@not(empty(item()?['RunID']))"}
+## Ready_and_Unclaimed [If] runAfter={'Triggered_Batch_Key': ['Succeeded']}
+   expression: {"and": [{"equals": ["@outputs('Get_Triggered_Staging_Record_New')?['body/StagingStatus/Value']", "Ready"]}, {"equals": ["@empty(\r\n outputs('Get_Triggered_Staging_Record_New')?['body/RunID']\r\n)", "@true"]}]}
+  -- ELSE
+  ## Stop_-_Not_Ready_or_Already_Claimed [Terminate] runAfter={}
+     inputs: {"runStatus": "Succeeded"}
+## Initialize_Partition_0_CSV [InitializeVariable] runAfter={'Initialize_Source_File_Group': ['Succeeded']}
+   inputs: {"variables": [{"name": "Partition0CSV", "type": "string"}]}
+## Initialize_Partition_1_CSV [InitializeVariable] runAfter={'Initialize_Partition_0_CSV': ['Succeeded']}
+   inputs: {"variables": [{"name": "Partition1CSV", "type": "string"}]}
+## Initialize_Partition_2_CSV [InitializeVariable] runAfter={'Initialize_Partition_1_CSV': ['Succeeded']}
+   inputs: {"variables": [{"name": "Partition2CSV", "type": "string"}]}
+## Initialize_Outbound_CSV [InitializeVariable] runAfter={'Initialize_Partition_2_CSV': ['Succeeded']}
+   inputs: {"variables": [{"name": "OutboundCSV", "type": "string"}]}
+## Initialize_Case_Date_Key [InitializeVariable] runAfter={'Initialize_Created_Case_Count': ['Succeeded']}
+   inputs: {"variables": [{"name": "CaseDateKey", "type": "string", "value": "@formatDateTime(\r\n convertTimeZone(\r\n utcNow(),\r\n 'UTC',\r\n 'Central Standard Time'\r\n ),\r\n 'yyyyMMdd'\r\n)"}]}
+## Initialize_Counter_Item_ID [InitializeVariable] runAfter={'Initialize_Case_Date_Key': ['Succeeded']}
+   inputs: {"variables": [{"name": "CounterItemID", "type": "integer", "value": 0}]}
+## Initialize_Current_Case_Sequence [InitializeVariable] runAfter={'Initialize_Counter_Item_ID': ['Succeeded']}
+   inputs: {"variables": [{"name": "CurrentCaseSequence", "type": "integer", "value": 0}]}
+## Initialize_Created_Case_Count [InitializeVariable] runAfter={'Initialize_Outbound_CSV': ['Succeeded']}
+   inputs: {"variables": [{"name": "CreatedCaseCount", "type": "integer", "value": 0}]}
+## Initialize_First_Case_Number_Assigned [InitializeVariable] runAfter={'Initialize_Current_Case_Sequence': ['Succeeded']}
+   inputs: {"variables": [{"name": "FirstCaseNumberAssigned", "type": "string"}]}
+## Initialize_Last_Case_Number_Assigned [InitializeVariable] runAfter={'Initialize_First_Case_Number_Assigned': ['Succeeded']}
+   inputs: {"variables": [{"name": "LastCaseNumberAssigned", "type": "string"}]}
+## Get_Triggered_Staging_Record_New [OpenApiConnection] runAfter={}
+   op: GetItem
+   table = <LIST_STAGING>
+   id = @first( triggerOutputs()?['body/value'] )?['ID']

@@ -1,0 +1,8 @@
+[ROOT]
+    1. Parse_Selected_Traces  (ParseJson)
+    2. Create_Batch_Header  (OpenApiConnection)  runAfter={'Parse_Selected_Traces': ['Succeeded']}
+    3. Create_Batch_Items  (Foreach)  runAfter={'Create_Batch_Header': ['Succeeded']}
+    4. Return_Batch_Creation_Result  (Response)  runAfter={'Create_Batch_Items': ['Succeeded']}
+
+[ROOT > Create_Batch_Items]
+    1. Create_Batch_Item  (OpenApiConnection)

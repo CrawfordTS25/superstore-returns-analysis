@@ -1,0 +1,248 @@
+[ROOT]
+    1. Get_Triggered_Staging_Record_New  (OpenApiConnection)
+    2. Triggered_Batch_Key  (Compose)  runAfter={'Get_Triggered_Staging_Record_New': ['Succeeded']}
+    3. Ready_and_Unclaimed  (If)  runAfter={'Triggered_Batch_Key': ['Succeeded']}
+    4. Get_Batch_Staging_Records  (OpenApiConnection)  runAfter={'Ready_and_Unclaimed': ['Succeeded']}
+    5. Initialize_Source_File_Group  (InitializeVariable)  runAfter={'Get_Batch_Staging_Records': ['Succeeded']}
+    6. Initialize_Partition_0_CSV  (InitializeVariable)  runAfter={'Initialize_Source_File_Group': ['Succeeded']}
+    7. Initialize_Partition_1_CSV  (InitializeVariable)  runAfter={'Initialize_Partition_0_CSV': ['Succeeded']}
+    8. Initialize_Partition_2_CSV  (InitializeVariable)  runAfter={'Initialize_Partition_1_CSV': ['Succeeded']}
+    9. Initialize_Outbound_CSV  (InitializeVariable)  runAfter={'Initialize_Partition_2_CSV': ['Succeeded']}
+   10. Initialize_Created_Case_Count  (InitializeVariable)  runAfter={'Initialize_Outbound_CSV': ['Succeeded']}
+   11. Initialize_Case_Date_Key  (InitializeVariable)  runAfter={'Initialize_Created_Case_Count': ['Succeeded']}
+   12. Initialize_Counter_Item_ID  (InitializeVariable)  runAfter={'Initialize_Case_Date_Key': ['Succeeded']}
+   13. Initialize_Current_Case_Sequence  (InitializeVariable)  runAfter={'Initialize_Counter_Item_ID': ['Succeeded']}
+   14. Initialize_First_Case_Number_Assigned  (InitializeVariable)  runAfter={'Initialize_Current_Case_Sequence': ['Succeeded']}
+   15. Initialize_Last_Case_Number_Assigned  (InitializeVariable)  runAfter={'Initialize_First_Case_Number_Assigned': ['Succeeded']}
+   16. Find_Claimed_Batch_Records  (Query)  runAfter={'Initialize_Last_Case_Number_Assigned': ['Succeeded']}
+   17. Batch_Records_Found  (If)  runAfter={'Find_Claimed_Batch_Records': ['Succeeded']}
+   18. Batch_Is_Unclaimed  (If)  runAfter={'Batch_Records_Found': ['Succeeded']}
+
+[ROOT > Ready_and_Unclaimed [NO]]
+    1. Stop_-_Not_Ready_or_Already_Claimed  (Terminate)
+
+[ROOT > Batch_Records_Found [NO]]
+    1. Stop_-_Batch_Records_Not_Found  (Terminate)
+
+[ROOT > Batch_Is_Unclaimed [YES]]
+    1. Generate_Run_ID  (Compose)
+    2. Claim_Batch_Records  (Foreach)  runAfter={'Generate_Run_ID': ['Succeeded']}
+    3. Create_Import_Run_Log  (OpenApiConnection)  runAfter={'Claim_Batch_Records': ['Succeeded']}
+    4. Retrieve_Batch_Files  (Foreach)  runAfter={'Create_Import_Run_Log': ['Succeeded']}
+    5. Validate_Required_CSV_Files  (If)  runAfter={'Retrieve_Batch_Files': ['Succeeded']}
+    6. Partition_0_Lines  (Compose)  runAfter={'Validate_Required_CSV_Files': ['Succeeded']}
+    7. Partition_0_Data_Lines  (Query)  runAfter={'Partition_0_Lines': ['Succeeded']}
+    8. Partition_1_Lines  (Compose)  runAfter={'Partition_0_Data_Lines': ['Succeeded']}
+    9. Partition_1_Data_Lines  (Query)  runAfter={'Partition_1_Lines': ['Succeeded']}
+   10. Partition_2_Lines  (Compose)  runAfter={'Partition_1_Data_Lines': ['Succeeded']}
+   11. Partition_2_Data_Lines  (Query)  runAfter={'Partition_2_Lines': ['Succeeded']}
+   12. Outbound_Lines  (Compose)  runAfter={'Partition_2_Data_Lines': ['Succeeded']}
+   13. Outbound_Data_Lines  (Query)  runAfter={'Outbound_Lines': ['Succeeded']}
+   14. Outbound_CSV_Header_Check  (Compose)  runAfter={'Outbound_Data_Lines': ['Succeeded']}
+   15. Outbound_CSV_Character_Count  (Compose)  runAfter={'Outbound_CSV_Header_Check': ['Succeeded']}
+   16. Outbound_CSV_Line_Count  (Compose)  runAfter={'Outbound_CSV_Character_Count': ['Succeeded']}
+   17. First_Outbound_Data_Row  (Compose)  runAfter={'Outbound_CSV_Line_Count': ['Succeeded']}
+   18. Parse_Outbound_CSV  (OpenApiConnection)  runAfter={'First_Outbound_Data_Row': ['Succeeded']}
+   19. Parsed_Outbound_Records  (Compose)  runAfter={'Parse_Outbound_CSV': ['Succeeded']}
+   20. Parsed_Outbound_Debug_Count  (Compose)  runAfter={'Parsed_Outbound_Records': ['Succeeded']}
+   21. Compact_Parsed_Outbound_Records  (Select)  runAfter={'Parsed_Outbound_Debug_Count': ['Succeeded']}
+   22. Compact_Outbound_Debug_Count  (Compose)  runAfter={'Compact_Parsed_Outbound_Records': ['Succeeded']}
+   23. Compact_Outbound_Records_Found  (If)  runAfter={'Compact_Outbound_Debug_Count': ['Succeeded']}
+   24. Total_Outbound_Tracking_Count  (Compose)  runAfter={'Compact_Outbound_Records_Found': ['Succeeded']}
+   25. Tracking_Chunk_Count  (Compose)  runAfter={'Total_Outbound_Tracking_Count': ['Succeeded']}
+   26. Tracking_Chunk_Indexes  (Compose)  runAfter={'Tracking_Chunk_Count': ['Succeeded']}
+   27. Create_Tracking_Processing_Chunks  (Foreach)  runAfter={'Tracking_Chunk_Indexes': ['Succeeded']}
+   28. Created_Tracking_Chunk_Count  (Compose)  runAfter={'Create_Tracking_Processing_Chunks': ['Succeeded']}
+   29. Tracking_Chunks_Queued  (Compose)  runAfter={'Created_Tracking_Chunk_Count': ['Succeeded']}
+   30. Select_Batch_File_IDs  (Select)  runAfter={'Tracking_Chunks_Queued': ['Succeeded']}
+   31. Select_Batch_File_Names  (Select)  runAfter={'Select_Batch_File_IDs': ['Succeeded']}
+   32. Run_a_Child_Flow  (Workflow)  runAfter={'Select_Batch_File_Names': ['Succeeded']}
+   33. QV_Batch_Promotion_Succeeded  (If)  runAfter={'Run_a_Child_Flow': ['Succeeded']}
+   34. Parsed_Outbound_Record_Count  (Compose)  runAfter={'QV_Batch_Promotion_Succeeded': ['Succeeded']}
+   35. Parsed_Outbound_Records_Balanced  (If)  runAfter={'Parsed_Outbound_Record_Count': ['Succeeded']}
+   36. CSV_Row_Count_Check  (Compose)  runAfter={'Parsed_Outbound_Records_Balanced': ['Succeeded']}
+   37. Total_Rows_Read  (Compose)  runAfter={'CSV_Row_Count_Check': ['Succeeded']}
+   38. Update_Import_Run_Row_Count  (OpenApiConnection)  runAfter={'Total_Rows_Read': ['Succeeded']}
+   39. Combined_Source_Data_Lines  (Compose)  runAfter={'Update_Import_Run_Row_Count': ['Succeeded']}
+   40. Source_Tracking_Numbers  (Select)  runAfter={'Combined_Source_Data_Lines': ['Succeeded']}
+   41. Unique_Source_Tracking_Numbers  (Compose)  runAfter={'Source_Tracking_Numbers': ['Succeeded']}
+   42. Valid_Source_Tracking_Numbers  (Query)  runAfter={'Unique_Source_Tracking_Numbers': ['Succeeded']}
+   43. Duplicate_Source_Tracking_Count  (Compose)  runAfter={'Valid_Source_Tracking_Numbers': ['Succeeded']}
+   44. Outbound_Tracking_Numbers  (Select)  runAfter={'Duplicate_Source_Tracking_Count': ['Succeeded']}
+   45. Normalize_Outbound_Tracking_Numbers  (Select)  runAfter={'Outbound_Tracking_Numbers': ['Succeeded']}
+   46. Remove_Blank_Outbound_Tracking_Numbers  (Query)  runAfter={'Normalize_Outbound_Tracking_Numbers': ['Succeeded']}
+   47. Unique_Outbound_Tracking_Numbers  (Compose)  runAfter={'Remove_Blank_Outbound_Tracking_Numbers': ['Succeeded']}
+   48. Valid_Outbound_Tracking_Numbers  (Query)  runAfter={'Unique_Outbound_Tracking_Numbers': ['Succeeded']}
+   49. Duplicate_Outbound_Tracking_Count  (Compose)  runAfter={'Valid_Outbound_Tracking_Numbers': ['Succeeded']}
+   50. Outbound_Tracking_Numbers_Found_in_Source  (Query)  runAfter={'Duplicate_Outbound_Tracking_Count': ['Succeeded']}
+   51. Evaluate_Outbound_Tracking_Numbers  (Foreach)  runAfter={'Outbound_Tracking_Numbers_Found_in_Source': ['Succeeded']}
+   52. Get_Current_Run_Tracking_Results  (OpenApiConnection)  runAfter={'Evaluate_Outbound_Tracking_Numbers': ['Succeeded']}
+   53. Filter_Active_Updated_Results  (Query)  runAfter={'Get_Current_Run_Tracking_Results': ['Succeeded']}
+   54. Filter_Historical_Match_Results  (Query)  runAfter={'Filter_Active_Updated_Results': ['Succeeded']}
+   55. Filter_New_Case_Required_Results  (Query)  runAfter={'Filter_Historical_Match_Results': ['Succeeded']}
+   56. Filter_Processing_Error_Results  (Query)  runAfter={'Filter_New_Case_Required_Results': ['Succeeded']}
+   57. Active_Match_Result_Count  (Compose)  runAfter={'Filter_Processing_Error_Results': ['Succeeded']}
+   58. Historical_Match_Result_Count  (Compose)  runAfter={'Active_Match_Result_Count': ['Succeeded']}
+   59. New_Case_Required_Result_Count  (Compose)  runAfter={'Historical_Match_Result_Count': ['Succeeded']}
+   60. Processing_Error_Result_Count  (Compose)  runAfter={'New_Case_Required_Result_Count': ['Succeeded']}
+   61. Classified_Tracking_Result_Count  (Compose)  runAfter={'Processing_Error_Result_Count': ['Succeeded']}
+   62. Outbound_Tracking_Numbers_Missing_from_Source  (Query)  runAfter={'Classified_Tracking_Result_Count': ['Succeeded']}
+   63. Tracking_Result_Reconciliation  (Compose)  runAfter={'Outbound_Tracking_Numbers_Missing_from_Source': ['Succeeded']}
+   64. Valid_Outbound_Tracking_Numbers_Found  (If)  runAfter={'Tracking_Result_Reconciliation': ['Succeeded']}
+   65. Outbound_Volume_Monitoring  (If)  runAfter={'Valid_Outbound_Tracking_Numbers_Found': ['Succeeded']}
+   66. Trace_Match_Count_Check  (Compose)  runAfter={'Outbound_Volume_Monitoring': ['Succeeded']}
+   67. Trace_Match_Counts_Balanced  (If)  runAfter={'Trace_Match_Count_Check': ['Succeeded']}
+   68. New_Case_Results_Balanced  (If)  runAfter={'Trace_Match_Counts_Balanced': ['Succeeded']}
+   69. Active_Case_Updates_Balanced  (If)  runAfter={'New_Case_Results_Balanced': ['Succeeded']}
+   70. New_Cases_Needed  (If)  runAfter={'Active_Case_Updates_Balanced': ['Succeeded']}
+   71. Update_Import_Run_Match_Results  (OpenApiConnection)  runAfter={'New_Cases_Needed': ['Succeeded']}
+   72. Scope_-_Finalize_Successful_Batch  (Scope)  runAfter={'Update_Import_Run_Match_Results': ['Succeeded']}
+   73. Scope_-_Handle_Batch_Failure  (Scope)  runAfter={'Scope_-_Finalize_Successful_Batch': ['Failed', 'TimedOut', 'Skipped']}
+
+[ROOT > Batch_Is_Unclaimed [YES] > Claim_Batch_Records]
+    1. Assign_Run_ID_to_Staging_Record  (OpenApiConnection)
+    2. Append_Source_File_Name  (AppendToStringVariable)  runAfter={'Assign_Run_ID_to_Staging_Record': ['Succeeded']}
+
+[ROOT > Batch_Is_Unclaimed [YES] > Retrieve_Batch_Files]
+    1. Get_CSV_File_Content  (OpenApiConnection)
+    2. CSV_Text  (Compose)  runAfter={'Get_CSV_File_Content': ['Succeeded']}
+    3. Is_Partition_0_File  (If)  runAfter={'CSV_Text': ['Succeeded']}
+    4. Is_Partition_1_File  (If)  runAfter={'Is_Partition_0_File': ['Succeeded']}
+    5. Is_Partition_2_File  (If)  runAfter={'Is_Partition_1_File': ['Succeeded']}
+    6. Is_Outbound_File  (If)  runAfter={'Is_Partition_2_File': ['Succeeded']}
+
+[ROOT > Batch_Is_Unclaimed [YES] > Retrieve_Batch_Files > Is_Partition_0_File [YES]]
+    1. Store_Partition_0_CSV  (SetVariable)
+
+[ROOT > Batch_Is_Unclaimed [YES] > Retrieve_Batch_Files > Is_Partition_1_File [YES]]
+    1. Store_Partition_1_CSV  (SetVariable)
+
+[ROOT > Batch_Is_Unclaimed [YES] > Retrieve_Batch_Files > Is_Partition_2_File [YES]]
+    1. Store_Partition_2_CSV  (SetVariable)
+
+[ROOT > Batch_Is_Unclaimed [YES] > Retrieve_Batch_Files > Is_Outbound_File [YES]]
+    1. Store_Outbound_CSV  (SetVariable)
+
+[ROOT > Batch_Is_Unclaimed [YES] > Validate_Required_CSV_Files [NO]]
+    1. Stop_-_Required_CSV_Content_Missing  (Terminate)
+
+[ROOT > Batch_Is_Unclaimed [YES] > Compact_Outbound_Records_Found [NO]]
+    1. Terminate  (Terminate)
+
+[ROOT > Batch_Is_Unclaimed [YES] > Create_Tracking_Processing_Chunks]
+    1. Create_Tracking_Chunk_Record  (OpenApiConnection)
+
+[ROOT > Batch_Is_Unclaimed [YES] > QV_Batch_Promotion_Succeeded [YES]]
+    1. Stop_-_QV_Batch_Published_and_Chunks_Queued  (Terminate)
+
+[ROOT > Batch_Is_Unclaimed [YES] > QV_Batch_Promotion_Succeeded [NO]]
+    1. Stop_-_QV_Batch_Promotion_Failed  (Terminate)
+
+[ROOT > Batch_Is_Unclaimed [YES] > Parsed_Outbound_Records_Balanced [NO]]
+    1. Stop_-_Parsed_Outbound_Records_Unbalanced  (Terminate)
+
+[ROOT > Batch_Is_Unclaimed [YES] > Evaluate_Outbound_Tracking_Numbers]
+    1. Find_Current_Parsed_Outbound_Record  (Query)
+    2. Current_Parsed_Outbound_Record_Found  (If)  runAfter={'Find_Current_Parsed_Outbound_Record': ['Succeeded']}
+
+[ROOT > Batch_Is_Unclaimed [YES] > Evaluate_Outbound_Tracking_Numbers > Current_Parsed_Outbound_Record_Found [YES]]
+    1. Current_Parsed_Outbound_Record  (Compose)
+    2. Find_Active_Trace  (OpenApiConnection)  runAfter={'Current_Parsed_Outbound_Record': ['Succeeded']}
+    3. Active_Trace_Found  (If)  runAfter={'Find_Active_Trace': ['Succeeded']}
+
+[ROOT > Batch_Is_Unclaimed [YES] > Evaluate_Outbound_Tracking_Numbers > Current_Parsed_Outbound_Record_Found [YES] > Active_Trace_Found [YES]]
+    1. Current_Active_Trace_Record  (Compose)
+    2. Refresh_Existing_Active_Trace_Audit  (OpenApiConnection)  runAfter={'Current_Active_Trace_Record': ['Succeeded']}
+    3. Write_Active_Updated_Result  (OpenApiConnection)  runAfter={'Refresh_Existing_Active_Trace_Audit': ['Succeeded']}
+
+[ROOT > Batch_Is_Unclaimed [YES] > Evaluate_Outbound_Tracking_Numbers > Current_Parsed_Outbound_Record_Found [YES] > Active_Trace_Found [NO]]
+    1. Find_Historical_Trace  (OpenApiConnection)
+    2. Historical_Trace_Found  (If)  runAfter={'Find_Historical_Trace': ['Succeeded']}
+
+[ROOT > Batch_Is_Unclaimed [YES] > Evaluate_Outbound_Tracking_Numbers > Current_Parsed_Outbound_Record_Found [YES] > Active_Trace_Found [NO] > Historical_Trace_Found [YES]]
+    1. Write_Historical_Match_Result  (OpenApiConnection)
+
+[ROOT > Batch_Is_Unclaimed [YES] > Evaluate_Outbound_Tracking_Numbers > Current_Parsed_Outbound_Record_Found [YES] > Active_Trace_Found [NO] > Historical_Trace_Found [NO]]
+    1. Write_New_Case_Required_Result  (OpenApiConnection)
+
+[ROOT > Batch_Is_Unclaimed [YES] > Evaluate_Outbound_Tracking_Numbers > Current_Parsed_Outbound_Record_Found [NO]]
+    1. Write_Parsed_Record_Error_Result  (OpenApiConnection)
+
+[ROOT > Batch_Is_Unclaimed [YES] > Valid_Outbound_Tracking_Numbers_Found [NO]]
+    1. Stop_-_No_Valid_Outbound_Tracking_Numbers  (Terminate)
+
+[ROOT > Batch_Is_Unclaimed [YES] > Outbound_Volume_Monitoring [NO]]
+    1. Full-Volume_Batch_Accepted  (Compose)
+
+[ROOT > Batch_Is_Unclaimed [YES] > Trace_Match_Counts_Balanced [NO]]
+    1. Stop_-_Trace_Match_Counts_Unbalanced  (Terminate)
+
+[ROOT > Batch_Is_Unclaimed [YES] > New_Case_Results_Balanced [NO]]
+    1. Stop_-_New_Case_Results_Unbalanced  (Terminate)
+
+[ROOT > Batch_Is_Unclaimed [YES] > Active_Case_Updates_Balanced [NO]]
+    1. Stop_-_Active_Case_Updates_Incomplete  (Terminate)
+
+[ROOT > Batch_Is_Unclaimed [YES] > New_Cases_Needed [YES]]
+    1. Find_Today_Case_Counter  (OpenApiConnection)
+    2. Today_Case_Counter_Found  (If)  runAfter={'Find_Today_Case_Counter': ['Succeeded']}
+    3. Create_New_Trace_Cases  (Foreach)  runAfter={'Today_Case_Counter_Found': ['Succeeded']}
+    4. All_New_Cases_Created  (If)  runAfter={'Create_New_Trace_Cases': ['Succeeded']}
+    5. New_Case_Creation_Summary  (Compose)  runAfter={'All_New_Cases_Created': ['Succeeded']}
+
+[ROOT > Batch_Is_Unclaimed [YES] > New_Cases_Needed [YES] > Today_Case_Counter_Found [YES]]
+    1. Set_Existing_Counter_Item_ID  (SetVariable)
+    2. Set_Existing_Case_Sequence  (SetVariable)  runAfter={'Set_Existing_Counter_Item_ID': ['Succeeded']}
+
+[ROOT > Batch_Is_Unclaimed [YES] > New_Cases_Needed [YES] > Today_Case_Counter_Found [NO]]
+    1. Create_Today_Case_Counter  (OpenApiConnection)
+    2. Set_New_Counter_Item_ID  (SetVariable)  runAfter={'Create_Today_Case_Counter': ['Succeeded']}
+    3. Set_New_Case_Sequence  (SetVariable)  runAfter={'Set_New_Counter_Item_ID': ['Succeeded']}
+
+[ROOT > Batch_Is_Unclaimed [YES] > New_Cases_Needed [YES] > Create_New_Trace_Cases]
+    1. Find_New_Case_Parsed_Outbound_Record  (Query)
+    2. Current_New_Case_Parsed_Outbound_Record  (Compose)  runAfter={'Find_New_Case_Parsed_Outbound_Record': ['Succeeded']}
+    3. Increment_Current_Case_Sequence  (IncrementVariable)  runAfter={'Current_New_Case_Parsed_Outbound_Record': ['Succeeded']}
+    4. Current_Case_Number  (Compose)  runAfter={'Increment_Current_Case_Sequence': ['Succeeded']}
+    5. First_Case_Number_Is_Blank  (If)  runAfter={'Current_Case_Number': ['Succeeded']}
+    6. Set_Last_Case_Number_Assigned  (SetVariable)  runAfter={'First_Case_Number_Is_Blank': ['Succeeded']}
+    7. Current_Trace_ID  (Compose)  runAfter={'Set_Last_Case_Number_Assigned': ['Succeeded']}
+    8. Reserve_Current_Case_Number  (OpenApiConnection)  runAfter={'Current_Trace_ID': ['Succeeded']}
+    9. Create_New_Active_Trace  (OpenApiConnection)  runAfter={'Reserve_Current_Case_Number': ['Succeeded']}
+   10. Complete_New_Case_Processing_Result  (OpenApiConnection)  runAfter={'Create_New_Active_Trace': ['Succeeded']}
+   11. Increment_Created_Case_Count  (IncrementVariable)  runAfter={'Complete_New_Case_Processing_Result': ['Succeeded']}
+
+[ROOT > Batch_Is_Unclaimed [YES] > New_Cases_Needed [YES] > Create_New_Trace_Cases > First_Case_Number_Is_Blank [YES]]
+    1. Set_First_Case_Number_Assigned  (SetVariable)
+
+[ROOT > Batch_Is_Unclaimed [YES] > New_Cases_Needed [YES] > All_New_Cases_Created [NO]]
+    1. Stop_-_New_Case_Creation_Incomplete  (Terminate)
+
+[ROOT > Batch_Is_Unclaimed [YES] > New_Cases_Needed [NO]]
+    1. No_New_Cases_Required  (Compose)
+
+[ROOT > Batch_Is_Unclaimed [YES] > Scope_-_Finalize_Successful_Batch]
+    1. Run_Completed_Date_Time  (Compose)
+    2. Processed_Folder_Path  (Compose)  runAfter={'Run_Completed_Date_Time': ['Succeeded']}
+    3. Move_Processed_Batch_Files  (Foreach)  runAfter={'Processed_Folder_Path': ['Succeeded']}
+    4. Finalize_Import_Run  (OpenApiConnection)  runAfter={'Move_Processed_Batch_Files': ['Succeeded']}
+    5. Complete_Batch_Staging_Records  (Foreach)  runAfter={'Finalize_Import_Run': ['Succeeded']}
+
+[ROOT > Batch_Is_Unclaimed [YES] > Scope_-_Finalize_Successful_Batch > Move_Processed_Batch_Files]
+    1. Move_Current_File_to_Processed  (OpenApiConnection)
+
+[ROOT > Batch_Is_Unclaimed [YES] > Scope_-_Finalize_Successful_Batch > Complete_Batch_Staging_Records]
+    1. Mark_Staging_Record_Completed  (OpenApiConnection)
+
+[ROOT > Batch_Is_Unclaimed [YES] > Scope_-_Handle_Batch_Failure]
+    1. Failure_Date_Time  (Compose)
+    2. Failure_Details  (Compose)  runAfter={'Failure_Date_Time': ['Succeeded']}
+    3. Fail_Import_Run  (OpenApiConnection)  runAfter={'Failure_Details': ['Succeeded']}
+    4. Fail_Batch_Staging_Records  (Foreach)  runAfter={'Fail_Import_Run': ['Succeeded']}
+
+[ROOT > Batch_Is_Unclaimed [YES] > Scope_-_Handle_Batch_Failure > Fail_Batch_Staging_Records]
+    1. Mark_Staging_Record_Failed  (OpenApiConnection)
+
+[ROOT > Batch_Is_Unclaimed [NO]]
+    1. Batch_Already_Claimed  (Compose)
+    2. Stop_-_Batch_Already_Claimed  (Terminate)  runAfter={'Batch_Already_Claimed': ['Succeeded']}

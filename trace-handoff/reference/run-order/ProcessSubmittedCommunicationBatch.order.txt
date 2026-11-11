@@ -1,0 +1,88 @@
+[ROOT]
+    1. Submitted_Batch_Status  (If)
+
+[ROOT > Submitted_Batch_Status [YES]]
+    1. Claim_Batch_for_Processing  (OpenApiConnection)
+    2. Get_All_Batch_Items  (OpenApiConnection)  runAfter={'Claim_Batch_for_Processing': ['Succeeded']}
+    3. Filter_Current_Batch  (Query)  runAfter={'Get_All_Batch_Items': ['Succeeded']}
+    4. Filter_Ready_Items  (Query)  runAfter={'Filter_Current_Batch': ['Succeeded']}
+    5. Ready_Item_Count  (Compose)  runAfter={'Filter_Ready_Items': ['Succeeded']}
+    6. Ready_Items_Found  (If)  runAfter={'Ready_Item_Count': ['Succeeded']}
+    7. Get_Batch_Items_for_Reconciliation  (OpenApiConnection)  runAfter={'Ready_Items_Found': ['Succeeded', 'Failed', 'TimedOut']}
+    8. Filter_Reconciliation_Batch  (Query)  runAfter={'Get_Batch_Items_for_Reconciliation': ['Succeeded']}
+    9. Filter_Sent_Items  (Query)  runAfter={'Filter_Reconciliation_Batch': ['Succeeded']}
+   10. Filter_Failed_Items  (Query)  runAfter={'Filter_Sent_Items': ['Succeeded']}
+   11. Filter_Skipped_Items  (Query)  runAfter={'Filter_Failed_Items': ['Succeeded']}
+   12. Filter_Open_Items  (Query)  runAfter={'Filter_Skipped_Items': ['Succeeded']}
+   13. Reconciliation_Total_Count  (Compose)  runAfter={'Filter_Open_Items': ['Succeeded']}
+   14. Reconciliation_Sent_Count  (Compose)  runAfter={'Reconciliation_Total_Count': ['Succeeded']}
+   15. Reconciliation_Failed_Count  (Compose)  runAfter={'Reconciliation_Sent_Count': ['Succeeded']}
+   16. Reconciliation_Skipped_Count  (Compose)  runAfter={'Reconciliation_Failed_Count': ['Succeeded']}
+   17. Reconciliation_Open_Count  (Compose)  runAfter={'Reconciliation_Skipped_Count': ['Succeeded']}
+   18. Final_Batch_Status  (Compose)  runAfter={'Reconciliation_Open_Count': ['Succeeded']}
+   19. Reconcile_Batch_Header  (OpenApiConnection)  runAfter={'Final_Batch_Status': ['Succeeded']}
+
+[ROOT > Submitted_Batch_Status [YES] > Ready_Items_Found [YES]]
+    1. Processor_Checkpoint  (Compose)
+    2. Process_Ready_Items  (Foreach)  runAfter={'Processor_Checkpoint': ['Succeeded']}
+
+[ROOT > Submitted_Batch_Status [YES] > Ready_Items_Found [YES] > Process_Ready_Items]
+    1. Ready_Item_Payload_Complete  (If)
+
+[ROOT > Submitted_Batch_Status [YES] > Ready_Items_Found [YES] > Process_Ready_Items > Ready_Item_Payload_Complete [YES]]
+    1. Validated_Communication_Payload  (Compose)
+    2. Get_Live_Trace_Workflow_Eligibility  (OpenApiConnection)  runAfter={'Validated_Communication_Payload': ['Succeeded']}
+    3. Live_Workflow_Eligible_for_Communication  (If)  runAfter={'Get_Live_Trace_Workflow_Eligibility': ['Succeeded']}
+
+[ROOT > Submitted_Batch_Status [YES] > Ready_Items_Found [YES] > Process_Ready_Items > Ready_Item_Payload_Complete [YES] > Live_Workflow_Eligible_for_Communication [YES]]
+    1. Communication_Send_Key  (Compose)
+    2. Get_Existing_Communication_Log  (OpenApiConnection)  runAfter={'Communication_Send_Key': ['Succeeded']}
+    3. Communication_Not_Previously_Started  (If)  runAfter={'Get_Existing_Communication_Log': ['Succeeded']}
+
+[ROOT > Submitted_Batch_Status [YES] > Ready_Items_Found [YES] > Process_Ready_Items > Ready_Item_Payload_Complete [YES] > Live_Workflow_Eligible_for_Communication [YES] > Communication_Not_Previously_Started [YES]]
+    1. Create_Pending_Communication_Log  (OpenApiConnection)
+    2. Lock_Batch_Item_for_Processing  (OpenApiConnection)  runAfter={'Create_Pending_Communication_Log': ['Succeeded']}
+    3. Send_Prepared_Communication  (OpenApiConnection)  runAfter={'Lock_Batch_Item_for_Processing': ['Succeeded']}
+    4. Mark_Communication_Log_Sent  (OpenApiConnection)  runAfter={'Send_Prepared_Communication': ['Succeeded']}
+    5. Mark_Batch_Item_Sent_-_Safe  (OpenApiConnection)  runAfter={'Mark_Communication_Log_Sent': ['Succeeded']}
+    6. Create_Claim_Activity  (OpenApiConnection)  runAfter={'Mark_Batch_Item_Sent_-_Safe': ['Succeeded']}
+    7. Mark_Communication_Log_Failed  (OpenApiConnection)  runAfter={'Send_Prepared_Communication': ['TimedOut', 'Failed']}
+    8. Get_Current_Trace_Workflow  (OpenApiConnection)  runAfter={'Create_Claim_Activity': ['Succeeded']}
+    9. Update_Trace_Workflow_After_Communication  (OpenApiConnection)  runAfter={'Get_Current_Trace_Workflow': ['Succeeded']}
+   10. Mark_Batch_Item_Failed_-_Safe  (OpenApiConnection)  runAfter={'Mark_Communication_Log_Failed': ['Succeeded']}
+
+[ROOT > Submitted_Batch_Status [YES] > Ready_Items_Found [YES] > Process_Ready_Items > Ready_Item_Payload_Complete [YES] > Live_Workflow_Eligible_for_Communication [YES] > Communication_Not_Previously_Started [NO]]
+    1. Existing_Communication_Log_Is_Sent  (If)
+
+[ROOT > Submitted_Batch_Status [YES] > Ready_Items_Found [YES] > Process_Ready_Items > Ready_Item_Payload_Complete [YES] > Live_Workflow_Eligible_for_Communication [YES] > Communication_Not_Previously_Started [NO] > Existing_Communication_Log_Is_Sent [YES]]
+    1. Duplicate_Send_Blocked  (Compose)
+    2. Reconcile_Previously_Sent_Batch_Item  (OpenApiConnection)  runAfter={'Duplicate_Send_Blocked': ['SUCCEEDED']}
+
+[ROOT > Submitted_Batch_Status [YES] > Ready_Items_Found [YES] > Process_Ready_Items > Ready_Item_Payload_Complete [YES] > Live_Workflow_Eligible_for_Communication [YES] > Communication_Not_Previously_Started [NO] > Existing_Communication_Log_Is_Sent [NO]]
+    1. Existing_Communication_Requires_Recovery  (Compose)
+    2. Existing_Communication_Log_Is_Failed  (If)  runAfter={'Existing_Communication_Requires_Recovery': ['Succeeded']}
+
+[ROOT > Submitted_Batch_Status [YES] > Ready_Items_Found [YES] > Process_Ready_Items > Ready_Item_Payload_Complete [YES] > Live_Workflow_Eligible_for_Communication [YES] > Communication_Not_Previously_Started [NO] > Existing_Communication_Log_Is_Sent [NO] > Existing_Communication_Log_Is_Failed [YES]]
+    1. Reset_Failed_Communication_Log_to_Pending  (OpenApiConnection)
+    2. Retry_Failed_Communication  (OpenApiConnection)  runAfter={'Reset_Failed_Communication_Log_to_Pending': ['Succeeded']}
+    3. Mark_Retried_Communication_Log_Sent  (OpenApiConnection)  runAfter={'Retry_Failed_Communication': ['Succeeded']}
+    4. Mark_Retried_Batch_Item_Sent  (OpenApiConnection)  runAfter={'Mark_Retried_Communication_Log_Sent': ['Succeeded']}
+    5. Mark_Retried_Communication_Log_Failed  (OpenApiConnection)  runAfter={'Retry_Failed_Communication': ['Failed', 'TimedOut']}
+    6. Mark_Retried_Batch_Item_Failed  (OpenApiConnection)  runAfter={'Mark_Retried_Communication_Log_Failed': ['Succeeded']}
+
+[ROOT > Submitted_Batch_Status [YES] > Ready_Items_Found [YES] > Process_Ready_Items > Ready_Item_Payload_Complete [YES] > Live_Workflow_Eligible_for_Communication [YES] > Communication_Not_Previously_Started [NO] > Existing_Communication_Log_Is_Sent [NO] > Existing_Communication_Log_Is_Failed [NO]]
+    1. Pending_Communication_Held  (Compose)
+    2. Hold_Batch_Item_for_Pending_Communication  (OpenApiConnection)  runAfter={'Pending_Communication_Held': ['Succeeded']}
+
+[ROOT > Submitted_Batch_Status [YES] > Ready_Items_Found [YES] > Process_Ready_Items > Ready_Item_Payload_Complete [YES] > Live_Workflow_Eligible_for_Communication [NO]]
+    1. Communication_Eligibility_Blocked  (Compose)
+    2. Mark_Ineligible_Batch_Item_Failed  (OpenApiConnection)  runAfter={'Communication_Eligibility_Blocked': ['Succeeded']}
+
+[ROOT > Submitted_Batch_Status [YES] > Ready_Items_Found [YES] > Process_Ready_Items > Ready_Item_Payload_Complete [NO]]
+    1. Blocked_Communication_Payload  (Compose)
+
+[ROOT > Submitted_Batch_Status [YES] > Ready_Items_Found [NO]]
+    1. No_Queued_Items_to_Process  (Compose)
+
+[ROOT > Submitted_Batch_Status [NO]]
+    1. Terminate  (Terminate)

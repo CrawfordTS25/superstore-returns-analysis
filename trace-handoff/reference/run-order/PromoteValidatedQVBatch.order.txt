@@ -1,0 +1,82 @@
+[ROOT]
+    1. Initialize_PromotionSucceeded  (InitializeVariable)
+    2. Initialize_PublicationStatus  (InitializeVariable)  runAfter={'Initialize_PromotionSucceeded': ['Succeeded']}
+    3. Initialize_ProcessedFolderPath  (InitializeVariable)  runAfter={'Initialize_PublicationStatus': ['Succeeded']}
+    4. Initialize_MovedFileCount  (InitializeVariable)  runAfter={'Initialize_ProcessedFolderPath': ['Succeeded']}
+    5. Initialize_ExpectedFileCount  (InitializeVariable)  runAfter={'Initialize_MovedFileCount': ['Succeeded']}
+    6. Initialize_RefreshRequested  (InitializeVariable)  runAfter={'Initialize_ExpectedFileCount': ['Succeeded']}
+    7. Initialize_FailureReason  (InitializeVariable)  runAfter={'Initialize_RefreshRequested': ['Succeeded']}
+    8. Initialize_BatchFileIDs  (InitializeVariable)  runAfter={'Initialize_FailureReason': ['Succeeded']}
+    9. Initialize_BatchFileNames  (InitializeVariable)  runAfter={'Initialize_BatchFileIDs': ['Succeeded']}
+   10. Initialize_AlreadyPublishedCount  (InitializeVariable)  runAfter={'Initialize_BatchFileNames': ['Succeeded']}
+   11. Validate_Promotion_Request  (Scope)  runAfter={'Initialize_AlreadyPublishedCount': ['Succeeded']}
+   12. Handle_Promotion_Failure  (Scope)  runAfter={'Validate_Promotion_Request': ['Failed', 'TimedOut']}
+   13. Return_QV_Promotion_Result  (Response)  runAfter={'Handle_Promotion_Failure': ['Succeeded', 'Skipped']}
+
+[ROOT > Validate_Promotion_Request]
+    1. Validation_Errors  (Compose)
+    2. Promotion_Request_Is_Valid  (If)  runAfter={'Validation_Errors': ['Succeeded']}
+
+[ROOT > Validate_Promotion_Request > Promotion_Request_Is_Valid [YES]]
+    1. Parse_Batch_File_IDs  (ParseJson)
+    2. Parse_Batch_File_Names  (ParseJson)  runAfter={'Parse_Batch_File_IDs': ['Succeeded']}
+    3. Set_BatchFileIDs  (SetVariable)  runAfter={'Parse_Batch_File_Names': ['Succeeded']}
+    4. Set_BatchFileNames  (SetVariable)  runAfter={'Set_BatchFileIDs': ['Succeeded']}
+    5. Set_ExpectedFileCount  (SetVariable)  runAfter={'Set_BatchFileNames': ['Succeeded']}
+    6. File_Arrays_Are_Valid  (If)  runAfter={'Set_ExpectedFileCount': ['Succeeded']}
+
+[ROOT > Validate_Promotion_Request > Promotion_Request_Is_Valid [YES] > File_Arrays_Are_Valid [YES]]
+    1. Processing_Cycle_Is_Morning  (If)
+    2. Process_Validated_Batch_Files  (Foreach)  runAfter={'Processing_Cycle_Is_Morning': ['Succeeded']}
+    3. All_Expected_Files_Published  (If)  runAfter={'Process_Validated_Batch_Files': ['Succeeded']}
+
+[ROOT > Validate_Promotion_Request > Promotion_Request_Is_Valid [YES] > File_Arrays_Are_Valid [YES] > Processing_Cycle_Is_Morning [YES]]
+    1. Set_Morning_Processed_Folder  (SetVariable)
+
+[ROOT > Validate_Promotion_Request > Promotion_Request_Is_Valid [YES] > File_Arrays_Are_Valid [YES] > Processing_Cycle_Is_Morning [NO]]
+    1. Processing_Cycle_Is_Afternoon  (If)
+
+[ROOT > Validate_Promotion_Request > Promotion_Request_Is_Valid [YES] > File_Arrays_Are_Valid [YES] > Processing_Cycle_Is_Morning [NO] > Processing_Cycle_Is_Afternoon [YES]]
+    1. Set_Afternoon_Processed_Folder  (SetVariable)
+
+[ROOT > Validate_Promotion_Request > Promotion_Request_Is_Valid [YES] > File_Arrays_Are_Valid [YES] > Processing_Cycle_Is_Morning [NO] > Processing_Cycle_Is_Afternoon [NO]]
+    1. Set_Invalid_Processing_Cycle_Reason  (SetVariable)
+    2. Set_Invalid_Processing_Cycle_Status  (SetVariable)  runAfter={'Set_Invalid_Processing_Cycle_Reason': ['Succeeded']}
+
+[ROOT > Validate_Promotion_Request > Promotion_Request_Is_Valid [YES] > File_Arrays_Are_Valid [YES] > Process_Validated_Batch_Files]
+    1. Current_File_ID  (Compose)
+    2. Current_File_Name  (Compose)  runAfter={'Current_File_ID': ['Succeeded']}
+    3. Destination_File_Path  (Compose)  runAfter={'Current_File_Name': ['Succeeded']}
+    4. Find_Destination_File  (OpenApiConnection)  runAfter={'Destination_File_Path': ['Succeeded']}
+    5. Destination_File_Already_Exists  (If)  runAfter={'Find_Destination_File': ['SUCCEEDED']}
+
+[ROOT > Validate_Promotion_Request > Promotion_Request_Is_Valid [YES] > File_Arrays_Are_Valid [YES] > Process_Validated_Batch_Files > Destination_File_Already_Exists [YES]]
+    1. Increment_AlreadyPublishedCount_v2  (IncrementVariable)
+
+[ROOT > Validate_Promotion_Request > Promotion_Request_Is_Valid [YES] > File_Arrays_Are_Valid [YES] > Process_Validated_Batch_Files > Destination_File_Already_Exists [NO]]
+    1. Move_Current_File_to_Processed_v2_  (OpenApiConnection)
+    2. Increment_MovedFileCount_v2  (IncrementVariable)  runAfter={'Move_Current_File_to_Processed_v2_': ['SUCCEEDED']}
+
+[ROOT > Validate_Promotion_Request > Promotion_Request_Is_Valid [YES] > File_Arrays_Are_Valid [YES] > All_Expected_Files_Published [YES]]
+    1. Set_Published_Status  (SetVariable)
+    2. Set_Promotion_Succeeded  (SetVariable)  runAfter={'Set_Published_Status': ['Succeeded']}
+    3. Clear_Failure_Reason  (SetVariable)  runAfter={'Set_Promotion_Succeeded': ['Succeeded']}
+
+[ROOT > Validate_Promotion_Request > Promotion_Request_Is_Valid [YES] > File_Arrays_Are_Valid [YES] > All_Expected_Files_Published [NO]]
+    1. Set_File_Promotion_Count_Failure  (SetVariable)
+    2. Set_File_Promotion_Failure_Status  (SetVariable)  runAfter={'Set_File_Promotion_Count_Failure': ['Succeeded']}
+
+[ROOT > Validate_Promotion_Request > Promotion_Request_Is_Valid [YES] > File_Arrays_Are_Valid [NO]]
+    1. Set_File_Array_Count_Failure  (SetVariable)
+    2. Set_File_Array_Validation_Status  (SetVariable)  runAfter={'Set_File_Array_Count_Failure': ['Succeeded']}
+
+[ROOT > Validate_Promotion_Request > Promotion_Request_Is_Valid [NO]]
+    1. Set_Validation_Failure_Reason  (SetVariable)
+    2. Set_Failed_Validation_Status  (SetVariable)  runAfter={'Set_Validation_Failure_Reason': ['Succeeded']}
+
+[ROOT > Handle_Promotion_Failure]
+    1. Promotion_Has_Not_Already_Succeeded  (If)
+
+[ROOT > Handle_Promotion_Failure > Promotion_Has_Not_Already_Succeeded [YES]]
+    1. Set_Promotion_Failure_Reason  (SetVariable)
+    2. Set_Promotion_Failure_Status  (SetVariable)  runAfter={'Set_Promotion_Failure_Reason': ['Succeeded']}

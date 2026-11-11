@@ -1,0 +1,61 @@
+[ROOT]
+    1. File_Name  (Compose)
+    2. Initialize_File_Role  (InitializeVariable)  runAfter={'File_Name': ['Succeeded']}
+    3. Is_Outbound_File  (If)  runAfter={'Initialize_File_Role': ['Succeeded']}
+    4. Final_File_Classification  (Compose)  runAfter={'Is_Outbound_File': ['Succeeded']}
+    5. Initialize_Processing_Cycle  (InitializeVariable)  runAfter={'Final_File_Classification': ['Succeeded']}
+    6. Is_Morning_Upload  (If)  runAfter={'Initialize_Processing_Cycle': ['Succeeded']}
+    7. Final_Processing_Cycle  (Compose)  runAfter={'Is_Morning_Upload': ['Succeeded']}
+    8. Batch_Key  (Compose)  runAfter={'Final_Processing_Cycle': ['Succeeded']}
+    9. Check_for_Existing_File  (OpenApiConnection)  runAfter={'Batch_Key': ['Succeeded']}
+   10. File_Is_New  (If)  runAfter={'Check_for_Existing_File': ['Succeeded']}
+
+[ROOT > Is_Outbound_File [YES]]
+    1. Set_Role_-_Outbound_Statusvariable  (SetVariable)
+
+[ROOT > Is_Outbound_File [NO]]
+    1. Is_Partition_0  (If)
+
+[ROOT > Is_Outbound_File [NO] > Is_Partition_0 [YES]]
+    1. Set_Role_-_Source_Partition_0  (SetVariable)
+
+[ROOT > Is_Outbound_File [NO] > Is_Partition_0 [NO]]
+    1. Is_Partition_1  (If)
+
+[ROOT > Is_Outbound_File [NO] > Is_Partition_0 [NO] > Is_Partition_1 [YES]]
+    1. Set_Role_-_Source_Partition_1  (SetVariable)
+
+[ROOT > Is_Outbound_File [NO] > Is_Partition_0 [NO] > Is_Partition_1 [NO]]
+    1. Is_Partition_2  (If)
+
+[ROOT > Is_Outbound_File [NO] > Is_Partition_0 [NO] > Is_Partition_1 [NO] > Is_Partition_2 [YES]]
+    1. Set_Role_-_Source_Partition_2  (SetVariable)
+
+[ROOT > Is_Morning_Upload [YES]]
+    1. Set_Cycle_-_Morning  (SetVariable)
+
+[ROOT > Is_Morning_Upload [NO]]
+    1. Set_Cycle_-_Afternoon  (SetVariable)
+
+[ROOT > File_Is_New [YES]]
+    1. Create_Staging_Record  (OpenApiConnection)
+    2. Wait_for_Staging_Record  (Wait)  runAfter={'Create_Staging_Record': ['Succeeded']}
+    3. Get_Files_in_Batch  (OpenApiConnection)  runAfter={'Wait_for_Staging_Record': ['Succeeded']}
+    4. Find_Outbound_File  (Query)  runAfter={'Get_Files_in_Batch': ['Succeeded']}
+    5. Find_Partition_0  (Query)  runAfter={'Find_Outbound_File': ['Succeeded']}
+    6. Find_Partition_1  (Query)  runAfter={'Find_Partition_0': ['Succeeded']}
+    7. Find_Partition_2  (Query)  runAfter={'Find_Partition_1': ['Succeeded']}
+    8. Required_Batch_Files_Present  (If)  runAfter={'Find_Partition_2': ['Succeeded']}
+
+[ROOT > File_Is_New [YES] > Required_Batch_Files_Present [YES]]
+    1. Batch_Ready  (Compose)
+    2. Update_Ready_Batch_Files  (Foreach)  runAfter={'Batch_Ready': ['Succeeded']}
+
+[ROOT > File_Is_New [YES] > Required_Batch_Files_Present [YES] > Update_Ready_Batch_Files]
+    1. Set_Staging_File_Ready  (OpenApiConnection)
+
+[ROOT > File_Is_New [YES] > Required_Batch_Files_Present [NO]]
+    1. Batch_Waiting  (Compose)
+
+[ROOT > File_Is_New [NO]]
+    1. Duplicate_File_Detected  (Compose)

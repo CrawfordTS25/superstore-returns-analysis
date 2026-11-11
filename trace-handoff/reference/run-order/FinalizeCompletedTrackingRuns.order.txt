@@ -1,0 +1,147 @@
+[ROOT]
+    1. Initialize_Expected_Processing_Result_Count  (InitializeVariable)
+    2. Initialize_Case_Date_Key  (InitializeVariable)  runAfter={'Initialize_Expected_Processing_Result_Count': ['Succeeded']}
+    3. Initialize_Counter_Item_ID  (InitializeVariable)  runAfter={'Initialize_Case_Date_Key': ['Succeeded']}
+    4. Initialize_Current_Case_Sequence  (InitializeVariable)  runAfter={'Initialize_Counter_Item_ID': ['Succeeded']}
+    5. Initialize_Created_Case_Count  (InitializeVariable)  runAfter={'Initialize_Current_Case_Sequence': ['Succeeded']}
+    6. Initialize_First_Case_Number_Assigned  (InitializeVariable)  runAfter={'Initialize_Created_Case_Count': ['Succeeded']}
+    7. Initialize_Last_Case_Number_Assigned  (InitializeVariable)  runAfter={'Initialize_First_Case_Number_Assigned': ['Succeeded']}
+    8. Get_Candidate_Import_Runs  (OpenApiConnection)  runAfter={'Initialize_Last_Case_Number_Assigned': ['Succeeded']}
+    9. Newest_Eligible_Import_Run  (Compose)  runAfter={'Get_Candidate_Import_Runs': ['Succeeded']}
+   10. Selected_Import_Run_ID  (Compose)  runAfter={'Newest_Eligible_Import_Run': ['SUCCEEDED']}
+   11. Unfinalized_Import_Run_Found  (If)  runAfter={'Selected_Import_Run_ID': ['Succeeded']}
+   12. Mark_Finalization_Failed  (OpenApiConnection)  runAfter={'Unfinalized_Import_Run_Found': ['TimedOut', 'Failed']}
+   13. Stop_Failed_Finalization  (Terminate)  runAfter={'Mark_Finalization_Failed': ['Succeeded']}
+
+[ROOT > Unfinalized_Import_Run_Found [YES]]
+    1. Current_Candidate_Import_Run  (Compose)
+    2. Finalizer_Selected_Run_Check  (Compose)  runAfter={'Current_Candidate_Import_Run': ['Succeeded']}
+    3. Get_Candidate_Run_Chunks  (OpenApiConnection)  runAfter={'Finalizer_Selected_Run_Check': ['SUCCEEDED']}
+    4. Actual_Chunk_Count  (Compose)  runAfter={'Get_Candidate_Run_Chunks': ['Succeeded']}
+    5. Expected_Chunk_Count  (Compose)  runAfter={'Actual_Chunk_Count': ['Succeeded']}
+    6. Filter_Completed_Chunks  (Query)  runAfter={'Expected_Chunk_Count': ['Succeeded']}
+    7. Completed_Chunk_Count  (Compose)  runAfter={'Filter_Completed_Chunks': ['Succeeded']}
+    8. Filter_Failed_Chunks  (Query)  runAfter={'Completed_Chunk_Count': ['Succeeded']}
+    9. Failed_Chunk_Count  (Compose)  runAfter={'Filter_Failed_Chunks': ['Succeeded']}
+   10. Filter_Incomplete_Chunks  (Query)  runAfter={'Failed_Chunk_Count': ['Succeeded']}
+   11. Incomplete_Chunk_Count  (Compose)  runAfter={'Filter_Incomplete_Chunks': ['Succeeded']}
+   12. Candidate_Run_Chunks_Complete  (If)  runAfter={'Incomplete_Chunk_Count': ['Succeeded']}
+
+[ROOT > Unfinalized_Import_Run_Found [YES] > Candidate_Run_Chunks_Complete [YES]]
+    1. Get_Candidate_Run_Processing_Results_Page_1  (OpenApiConnection)
+    2. Candidate_Results_Page_1_Last_ID  (Compose)  runAfter={'Get_Candidate_Run_Processing_Results_Page_1': ['Succeeded']}
+    3. Get_Candidate_Run_Processing_Results_Page_2  (OpenApiConnection)  runAfter={'Candidate_Results_Page_1_Last_ID': ['Succeeded']}
+    4. All_Candidate_Run_Processing_Results  (Compose)  runAfter={'Get_Candidate_Run_Processing_Results_Page_2': ['Succeeded']}
+    5. Actual_Processing_Result_Count  (Compose)  runAfter={'All_Candidate_Run_Processing_Results': ['Succeeded']}
+    6. Sum_Chunk_Expected_Counts  (Foreach)  runAfter={'Actual_Processing_Result_Count': ['Succeeded']}
+    7. Expected_Processing_Result_Count  (Compose)  runAfter={'Sum_Chunk_Expected_Counts': ['Succeeded']}
+    8. Filter_Processing_Error_Results  (Query)  runAfter={'Expected_Processing_Result_Count': ['Succeeded']}
+    9. Processing_Error_Result_Count  (Compose)  runAfter={'Filter_Processing_Error_Results': ['Succeeded']}
+   10. Candidate_Run_Results_Balanced  (If)  runAfter={'Processing_Error_Result_Count': ['Succeeded']}
+
+[ROOT > Unfinalized_Import_Run_Found [YES] > Candidate_Run_Chunks_Complete [YES] > Sum_Chunk_Expected_Counts]
+    1. Add_Chunk_Expected_Count  (IncrementVariable)
+
+[ROOT > Unfinalized_Import_Run_Found [YES] > Candidate_Run_Chunks_Complete [YES] > Candidate_Run_Results_Balanced [YES]]
+    1. Generate_Finalizer_Run_ID  (Compose)
+    2. Claim_Import_Run_for_Finalization  (OpenApiConnection)  runAfter={'Generate_Finalizer_Run_ID': ['Succeeded']}
+    3. Verify_Import_Run_Finalization_Claim  (OpenApiConnection)  runAfter={'Claim_Import_Run_for_Finalization': ['Succeeded']}
+    4. Import_Run_Claim_Verified  (If)  runAfter={'Verify_Import_Run_Finalization_Claim': ['Succeeded']}
+
+[ROOT > Unfinalized_Import_Run_Found [YES] > Candidate_Run_Chunks_Complete [YES] > Candidate_Run_Results_Balanced [YES] > Import_Run_Claim_Verified [YES]]
+    1. Filter_New_Case_Required_Results  (Query)
+    2. New_Case_Required_Count  (Compose)  runAfter={'Filter_New_Case_Required_Results': ['Succeeded']}
+    3. Filter_New_Case_Created_Results  (Query)  runAfter={'New_Case_Required_Count': ['Succeeded']}
+    4. New_Case_Created_Count  (Compose)  runAfter={'Filter_New_Case_Created_Results': ['Succeeded']}
+    5. Filter_Active_Updated_Results  (Query)  runAfter={'New_Case_Created_Count': ['Succeeded']}
+    6. Active_Updated_Count  (Compose)  runAfter={'Filter_Active_Updated_Results': ['Succeeded']}
+    7. Filter_Historical_Match_Results  (Query)  runAfter={'Active_Updated_Count': ['Succeeded']}
+    8. Historical_Match_Count  (Compose)  runAfter={'Filter_Historical_Match_Results': ['Succeeded']}
+    9. Filter_Reference_History_Results  (Query)  runAfter={'Historical_Match_Count': ['Succeeded']}
+   10. Reference_History_Count  (Compose)  runAfter={'Filter_Reference_History_Results': ['Succeeded']}
+   11. Filter_Operational_Dashboard_Results  (Query)  runAfter={'Reference_History_Count': ['Succeeded']}
+   12. Operational_Dashboard_Count  (Compose)  runAfter={'Filter_Operational_Dashboard_Results': ['Succeeded']}
+   13. Filter_Communication_Review_Results  (Query)  runAfter={'Operational_Dashboard_Count': ['Succeeded']}
+   14. Communication_Review_Count  (Compose)  runAfter={'Filter_Communication_Review_Results': ['Succeeded']}
+   15. Filter_Manual_Classification_Results  (Query)  runAfter={'Communication_Review_Count': ['Succeeded']}
+   16. Manual_Classification_Count  (Compose)  runAfter={'Filter_Manual_Classification_Results': ['Succeeded']}
+   17. Filter_Needs_Case_Review_Results  (Query)  runAfter={'Manual_Classification_Count': ['Succeeded']}
+   18. Needs_Case_Review_Count  (Compose)  runAfter={'Filter_Needs_Case_Review_Results': ['Succeeded']}
+   19. Filter_Follow-Up_Required_Results  (Query)  runAfter={'Needs_Case_Review_Count': ['Succeeded']}
+   20. Follow-Up_Required_Count  (Compose)  runAfter={'Filter_Follow-Up_Required_Results': ['Succeeded']}
+   21. Filter_Pending_Review_Results  (Query)  runAfter={'Follow-Up_Required_Count': ['Succeeded']}
+   22. Pending_Review_Count  (Compose)  runAfter={'Filter_Pending_Review_Results': ['Succeeded']}
+   23. Filter_Dashboard_Only_Results  (Query)  runAfter={'Pending_Review_Count': ['Succeeded']}
+   24. Dashboard_Only_Count  (Compose)  runAfter={'Filter_Dashboard_Only_Results': ['Succeeded']}
+   25. Classified_Result_Count  (Compose)  runAfter={'Dashboard_Only_Count': ['Succeeded']}
+   26. Unclassified_Result_Count  (Compose)  runAfter={'Classified_Result_Count': ['Succeeded']}
+   27. Candidate_Outcome_Distribution_Balanced  (If)  runAfter={'Unclassified_Result_Count': ['Succeeded']}
+
+[ROOT > Unfinalized_Import_Run_Found [YES] > Candidate_Run_Chunks_Complete [YES] > Candidate_Run_Results_Balanced [YES] > Import_Run_Claim_Verified [YES] > Candidate_Outcome_Distribution_Balanced [YES]]
+    1. Classification_Refresh_Not_Requested  (If)
+    2. New_Cases_Required  (If)  runAfter={'Classification_Refresh_Not_Requested': ['Succeeded']}
+
+[ROOT > Unfinalized_Import_Run_Found [YES] > Candidate_Run_Chunks_Complete [YES] > Candidate_Run_Results_Balanced [YES] > Import_Run_Claim_Verified [YES] > Candidate_Outcome_Distribution_Balanced [YES] > Classification_Refresh_Not_Requested [YES]]
+    1. Request_TRACE_Classification_Dashboard_Refresh  (OpenApiConnection)
+    2. Mark_Classification_Ready  (OpenApiConnection)  runAfter={'Request_TRACE_Classification_Dashboard_Refresh': ['Succeeded']}
+
+[ROOT > Unfinalized_Import_Run_Found [YES] > Candidate_Run_Chunks_Complete [YES] > Candidate_Run_Results_Balanced [YES] > Import_Run_Claim_Verified [YES] > Candidate_Outcome_Distribution_Balanced [YES] > New_Cases_Required [YES]]
+    1. Find_Today_Case_Counter  (OpenApiConnection)
+    2. Today_Case_Counter_Found  (If)  runAfter={'Find_Today_Case_Counter': ['Succeeded']}
+    3. Create_Required_TRACE_Cases  (Foreach)  runAfter={'Today_Case_Counter_Found': ['Succeeded']}
+    4. Calculated_First_Case_Number_Assigned  (Compose)  runAfter={'Create_Required_TRACE_Cases': ['Succeeded']}
+    5. Set_First_Case_Number_Assigned  (SetVariable)  runAfter={'Calculated_First_Case_Number_Assigned': ['Succeeded']}
+    6. Get_Remaining_New_Case_Required_Results  (OpenApiConnection)  runAfter={'Set_First_Case_Number_Assigned': ['Succeeded']}
+    7. Remaining_New_Cases_Found  (If)  runAfter={'Get_Remaining_New_Case_Required_Results': ['Succeeded']}
+
+[ROOT > Unfinalized_Import_Run_Found [YES] > Candidate_Run_Chunks_Complete [YES] > Candidate_Run_Results_Balanced [YES] > Import_Run_Claim_Verified [YES] > Candidate_Outcome_Distribution_Balanced [YES] > New_Cases_Required [YES] > Today_Case_Counter_Found [YES]]
+    1. Set_Existing_Counter_Item_ID  (SetVariable)
+    2. Set_Existing_Case_Sequence  (SetVariable)  runAfter={'Set_Existing_Counter_Item_ID': ['Succeeded']}
+
+[ROOT > Unfinalized_Import_Run_Found [YES] > Candidate_Run_Chunks_Complete [YES] > Candidate_Run_Results_Balanced [YES] > Import_Run_Claim_Verified [YES] > Candidate_Outcome_Distribution_Balanced [YES] > New_Cases_Required [YES] > Today_Case_Counter_Found [NO]]
+    1. Create_Today_Case_Counter  (OpenApiConnection)
+    2. Set_New_Counter_Item_ID  (SetVariable)  runAfter={'Create_Today_Case_Counter': ['Succeeded']}
+    3. Set_New_Case_Sequence  (SetVariable)  runAfter={'Set_New_Counter_Item_ID': ['Succeeded']}
+
+[ROOT > Unfinalized_Import_Run_Found [YES] > Candidate_Run_Chunks_Complete [YES] > Candidate_Run_Results_Balanced [YES] > Import_Run_Claim_Verified [YES] > Candidate_Outcome_Distribution_Balanced [YES] > New_Cases_Required [YES] > Create_Required_TRACE_Cases]
+    1. Check_TRACE_Case_Already_Created  (OpenApiConnection)
+    2. TRACE_Case_Does_Not_Exist  (If)  runAfter={'Check_TRACE_Case_Already_Created': ['Succeeded']}
+
+[ROOT > Unfinalized_Import_Run_Found [YES] > Candidate_Run_Chunks_Complete [YES] > Candidate_Run_Results_Balanced [YES] > Import_Run_Claim_Verified [YES] > Candidate_Outcome_Distribution_Balanced [YES] > New_Cases_Required [YES] > Create_Required_TRACE_Cases > TRACE_Case_Does_Not_Exist [YES]]
+    1. Increment_Current_Case_Sequence  (IncrementVariable)
+    2. Current_Case_Number  (Compose)  runAfter={'Increment_Current_Case_Sequence': ['Succeeded']}
+    3. Current_Trace_ID  (Compose)  runAfter={'Current_Case_Number': ['Succeeded']}
+    4. Reserve_Current_Case_Number  (OpenApiConnection)  runAfter={'Current_Trace_ID': ['Succeeded']}
+    5. Create_New_Active_TRACE  (OpenApiConnection)  runAfter={'Reserve_Current_Case_Number': ['Succeeded']}
+    6. Complete_New_Case_Processing_Result  (OpenApiConnection)  runAfter={'Create_New_Active_TRACE': ['Succeeded']}
+    7. Set_Last_Case_Number_Assigned  (SetVariable)  runAfter={'Complete_New_Case_Processing_Result': ['Succeeded']}
+    8. Increment_Created_Case_Count  (IncrementVariable)  runAfter={'Set_Last_Case_Number_Assigned': ['Succeeded']}
+
+[ROOT > Unfinalized_Import_Run_Found [YES] > Candidate_Run_Chunks_Complete [YES] > Candidate_Run_Results_Balanced [YES] > Import_Run_Claim_Verified [YES] > Candidate_Outcome_Distribution_Balanced [YES] > New_Cases_Required [YES] > Create_Required_TRACE_Cases > TRACE_Case_Does_Not_Exist [NO]]
+    1. Current_Existing_TRACE_Case  (Compose)
+    2. Refresh_Existing_TRACE_Shipment_Details  (OpenApiConnection)  runAfter={'Current_Existing_TRACE_Case': ['Succeeded']}
+    3. Link_Existing_TRACE_Case_to_Result  (OpenApiConnection)  runAfter={'Refresh_Existing_TRACE_Shipment_Details': ['Succeeded']}
+
+[ROOT > Unfinalized_Import_Run_Found [YES] > Candidate_Run_Chunks_Complete [YES] > Candidate_Run_Results_Balanced [YES] > Import_Run_Claim_Verified [YES] > Candidate_Outcome_Distribution_Balanced [YES] > New_Cases_Required [YES] > Remaining_New_Cases_Found [YES]]
+    1. Release_Import_Run_for_Next_Case_Block  (OpenApiConnection)
+
+[ROOT > Unfinalized_Import_Run_Found [YES] > Candidate_Run_Chunks_Complete [YES] > Candidate_Run_Results_Balanced [YES] > Import_Run_Claim_Verified [YES] > Candidate_Outcome_Distribution_Balanced [YES] > New_Cases_Required [YES] > Remaining_New_Cases_Found [NO]]
+    1. Get_Final_Run_Processing_Results_Page_1_v2  (OpenApiConnection)
+    2. Final_Results_Page_1_Last_ID_v2  (Compose)  runAfter={'Get_Final_Run_Processing_Results_Page_1_v2': ['Succeeded']}
+    3. Get_Final_Run_Processing_Results_Page_2  (OpenApiConnection)  runAfter={'Final_Results_Page_1_Last_ID_v2': ['Succeeded']}
+    4. All_Final_Run_Processing_Results_v2  (Compose)  runAfter={'Get_Final_Run_Processing_Results_Page_2': ['Succeeded']}
+    5. Filter_Unresolved_Final_Results  (Query)  runAfter={'All_Final_Run_Processing_Results_v2': ['Succeeded']}
+    6. Unresolved_Final_Result_Count  (Compose)  runAfter={'Filter_Unresolved_Final_Results': ['Succeeded']}
+    7. Final_Processing_Result_Count  (Compose)  runAfter={'Unresolved_Final_Result_Count': ['Succeeded']}
+    8. Final_Run_Reconciliation_Passed  (If)  runAfter={'Final_Processing_Result_Count': ['Succeeded']}
+
+[ROOT > Unfinalized_Import_Run_Found [YES] > Candidate_Run_Chunks_Complete [YES] > Candidate_Run_Results_Balanced [YES] > Import_Run_Claim_Verified [YES] > Candidate_Outcome_Distribution_Balanced [YES] > New_Cases_Required [YES] > Remaining_New_Cases_Found [NO] > Final_Run_Reconciliation_Passed [YES]]
+    1. Request_TRACE_Dashboard_Refresh  (OpenApiConnection)
+    2. Complete_Import_Run_Finalization  (OpenApiConnection)  runAfter={'Request_TRACE_Dashboard_Refresh': ['Succeeded']}
+
+[ROOT > Unfinalized_Import_Run_Found [YES] > Candidate_Run_Chunks_Complete [YES] > Candidate_Run_Results_Balanced [YES] > Import_Run_Claim_Verified [YES] > Candidate_Outcome_Distribution_Balanced [YES] > New_Cases_Required [YES] > Remaining_New_Cases_Found [NO] > Final_Run_Reconciliation_Passed [NO]]
+    1. Fail_Final_Reconciliation  (OpenApiConnection)
+
+[ROOT > Unfinalized_Import_Run_Found [YES] > Candidate_Run_Chunks_Complete [YES] > Candidate_Run_Results_Balanced [YES] > Import_Run_Claim_Verified [YES] > Candidate_Outcome_Distribution_Balanced [YES] > New_Cases_Required [NO]]
+    1. Request_TRACE_Dashboard_Refresh_-_No_New_Cases  (OpenApiConnection)
+    2. Complete_Import_Run_Finalization_-_No_New_Cases  (OpenApiConnection)  runAfter={'Request_TRACE_Dashboard_Refresh_-_No_New_Cases': ['Succeeded']}

@@ -1,0 +1,64 @@
+TRIGGER When_an_item_is_created_or_modified: {"recurrence": {"frequency": "Minute", "interval": 1}, "evaluatedRecurrence": {"frequency": "Minute", "interval": 1}, "type": "OpenApiConnection", "inputs": {"parameters": {"dataset": "https://<tenant>.sharepoint.com/sites/<site>", "table": "<LIST_RESULTS>"}, "host": {"apiId": "/providers/Microsoft.PowerApps/apis/shared_sharepointonline", "connectionName": "shared_sharepointonline", "operationId": "GetOnUpdatedItems"}, "authentication": "@parameters('$authentication')"}, "conditions": [], "runtimeConfiguration": {"concurrency": {"runs": 1, "maximumWaitingRuns": 100}}}
+## Current_Review_RunID [Compose] runAfter={}
+   inputs: @first( triggerOutputs()?['body/value'] )?['field_1']
+## Current_Review_Decision [Compose] runAfter={'Current_Review_RunID': ['Succeeded']}
+   inputs: @first( triggerBody()?['value'] )?['CaseReviewDecision']?['Value']
+## Review_Decision_Is_Complete [If] runAfter={'Current_Review_Decision': ['Succeeded']}
+   expression: {"and": [{"equals": ["@or(\r\n equals(\r\n outputs('Current_Review_Decision'),\r\n 'Create TRACE Case'\r\n ),\r\n equals(\r\n outputs('Current_Review_Decision'),\r\n 'Dashboard Only - No Case'\r\n )\r\n)", "@true"]}]}
+  ## Get_Remaining_Case_Reviews [OpenApiConnection] runAfter={}
+     op: GetItems
+     table = <LIST_RESULTS>
+     $filter = @concat( 'field_1 eq ''', outputs('Current_Review_RunID'), ''' and field_4 eq ''Needs Case Review''' )
+     $top = 1
+  ## All_Case_Reviews_Completed [If] runAfter={'Get_Remaining_Case_Reviews': ['Succeeded']}
+     expression: {"and": [{"equals": ["@length(\r\n body('Get_Remaining_Case_Reviews')?['value']\r\n)", "01"]}]}
+    ## Get_Import_Run_Awaiting_Review [OpenApiConnection] runAfter={}
+       op: GetItems
+       table = <LIST_IMPORT_RUNS>
+       $filter = @concat( 'RunID eq ''', outputs('Current_Review_RunID'), '''' ) 
+       $top = 1
+    ## Import_Run_Found_ [If] runAfter={'Get_Import_Run_Awaiting_Review': ['Succeeded']}
+       expression: {"and": [{"greater": ["@length(\r\n body('Get_Import_Run_Awaiting_Review')?['value']\r\n)", 0]}]}
+      ## Current_Import_Run [Compose] runAfter={}
+         inputs: @first( body('Get_Import_Run_Awaiting_Review')?['value'] )
+      ## Import_Run_Is_Awaiting_Review [If] runAfter={'Current_Import_Run': ['Succeeded']}
+         expression: {"and": [{"equals": ["@coalesce(\r\n outputs('Current_Import_Run')?['FinalizationStatus']?['Value'],\r\n outputs('Current_Import_Run')?['FinalizationStatus']\r\n)", "Awaiting Review"]}]}
+        ## Release_Import_Run_After_Reviews [OpenApiConnection] runAfter={}
+           op: PatchItem
+           table = <LIST_IMPORT_RUNS>
+           id = @outputs('Current_Import_Run')?['ID']
+           item/Title = @outputs('Current_Import_Run')?['Title']
+           item/FileName = @outputs('Current_Import_Run')?['FileName']
+           item/RunDate_x002f_Time = @outputs('Current_Import_Run')?['RunDate_x002f_Time']
+           item/RunID = @outputs('Current_Import_Run')?['RunID']
+           item/FolderType/Value = @outputs('Current_Import_Run')?['FolderType']?['Value']
+           item/RowsRead = @int( coalesce( outputs('Current_Import_Run')?['RowsRead'], 0 ) )
+           item/RowsCreated = @int( coalesce( outputs('Current_Import_Run')?['RowsCreated'], 0 ) )
+           item/RowsUpdated = @int( coalesce( outputs('Current_Import_Run')?['RowsUpdated'], 0 ) )
+           item/RowsSkipped = @int( coalesce( outputs('Current_Import_Run')?['RowsSkipped'], 0 ) )
+           item/RowsFailed = @int( coalesce( outputs('Current_Import_Run')?['RowsFailed'], 0 ) )
+           item/RunStatus/Value = Started
+           item/Notes = @concat( coalesce( outputs('Current_Import_Run')?['Notes'], '' ), ' All case-review decisions were completed. The import run was released for TRACE finalization on ', utcNow(), '.' )
+           item/HistoricalMatches = @int( coalesce( outputs('Current_Import_Run')?['HistoricalMatches'], 0 ) ) 
+           item/DuplicateRows = @int( coalesce( outputs('Current_Import_Run')?['DuplicateRows'], 0 ) )
+           item/FirstCaseNumberAssigned = @outputs('Current_Import_Run')?['FirstCaseNumberAssigned']
+           item/LastCaseNumberAssigned = @outputs('Current_Import_Run')?['LastCaseNumberAssigned']
+           item/RunCompletedDate_x002f_Time = @null
+           item/SourceFileGroup = @outputs('Current_Import_Run')?['SourceFileGroup']
+           item/FinalizationStatus/Value = Not Started
+           item/FinalizerRunID = @null
+           item/FinalizationStartedDate = @null
+           item/FinalizationCompletedDate = @null
+           item/FinalizationErrorMessage = @null
+           item/EmailBatchReady = @false
+           item/DashboardRefreshRequested = @false
+           item/DashboardRefreshRequestedDate = @null
+           item/DashboardRefreshCompleted = @false
+           item/ClassificationReady = @true
+           item/ClassificationCompletedDate = @coalesce( outputs('Current_Import_Run')?['ClassificationCompletedDate'], utcNow() )
+           item/ClassificationRefreshRequested = @true
+           item/ClassificationRefreshRequestedDa = @coalesce( outputs('Current_Import_Run')?['ClassificationRefreshRequestedDate'], utcNow() )
+        -- ELSE
+      -- ELSE
+    -- ELSE
+  -- ELSE

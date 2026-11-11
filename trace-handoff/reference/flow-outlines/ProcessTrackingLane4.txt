@@ -1,0 +1,361 @@
+TRIGGER Recurrence: {"type": "Recurrence", "recurrence": {"interval": 90, "frequency": "Minute", "timeZone": "Central Standard Time", "startTime": "2026-10-07T20:01:30Z"}}
+## Initialize_Chunks_Processed_This_Activation [InitializeVariable] runAfter={}
+   inputs: {"variables": [{"name": "ChunksProcessedThisActivation", "type": "integer", "value": 0}]}
+## Initialize_No_Lane_Work_Remaining [InitializeVariable] runAfter={'Initialize_Chunks_Processed_This_Activation': ['Succeeded']}
+   inputs: {"variables": [{"name": "NoLaneWorkRemaining", "type": "boolean", "value": false}]}
+## Initialize_Maximum_Chunks_This_Activation [InitializeVariable] runAfter={'Initialize_No_Lane_Work_Remaining': ['Succeeded']}
+   inputs: {"variables": [{"name": "MaximumChunksThisActivation", "type": "integer", "value": 10}]}
+## Process_Lane_Until_Empty_or_Limit_Reached [Until] runAfter={'Initialize_Lane_Fatal_Error_Message': ['Succeeded']}
+   limit: {"count": 10, "timeout": "PT90M"}
+   expression: @or( equals( variables('NoLaneWorkRemaining'), true ), greaterOrEquals( variables('ChunksProcessedThisActivation'), variables('MaximumChunksThisActivation') ), equals( variables('LaneFatalError'), true ) )
+  ## Pending_Chunk_Found [If] runAfter={'Get_Pending_Chunk_Source': ['Succeeded']}
+     expression: {"and": [{"greater": ["@length(\r\n body('Get_Pending_Chunk_Source')?['value']\r\n)", 0]}]}
+    ## Get_Triggered_Chunk_Record [OpenApiConnection] runAfter={}
+       op: GetItem
+       table = <LIST_CHUNKS>
+       id = @first( body('Get_Pending_Chunk_Source')?['value'] )?['ID']
+    ## Chunk_Is_Pending [If] runAfter={'Get_Triggered_Chunk_Record': ['Succeeded']}
+       expression: {"and": [{"equals": ["@and(\r\n equals(\r\n outputs('Get_Triggered_Chunk_Record')?['body/field_8/Value'],\r\n 'Pending'\r\n ),\r\n equals(\r\n int(\r\n outputs('Get_Triggered_Chunk_Record')?['body/WorkerLane']\r\n ),\r\n 4\r\n )\r\n)", "@true"]}]}
+      ## Generate_Worker_Run_ID [Compose] runAfter={}
+         inputs: @concat( 'TRACE-WORKER-', string( outputs('Get_Triggered_Chunk_Record')?['body/ID'] ), '-', substring( guid(), 0, 8 ) )
+      ## Claim_Tracking_Chunk [OpenApiConnection] runAfter={'Current_Claim_Token': ['Succeeded']}
+         op: PatchItem
+         table = <LIST_CHUNKS>
+         id = @outputs('Get_Triggered_Chunk_Record')?['body/ID']
+         item/Title = @outputs('Get_Triggered_Chunk_Record')?['body/Title']
+         item/field_1 = @outputs('Get_Triggered_Chunk_Record')?['body/field_1']
+         item/field_2 = @outputs('Get_Triggered_Chunk_Record')?['body/field_2']
+         item/field_3 = @outputs('Get_Triggered_Chunk_Record')?['body/field_3']
+         item/field_4 = @outputs('Get_Triggered_Chunk_Record')?['body/field_4']
+         item/field_5 = @outputs('Get_Triggered_Chunk_Record')?['body/field_5']
+         item/field_6 = @int(0)
+         item/field_7 = @int(0)
+         item/field_9 = @outputs('Get_Triggered_Chunk_Record')?['body/field_9']
+         item/field_13 = @int( coalesce( outputs('Get_Triggered_Chunk_Record')?['body/field_13'], 0 ) )
+         item/TotalChunkCount = @outputs('Get_Triggered_Chunk_Record')?['body/TotalChunkCount']
+         item/field_8/Value = Processing
+         item/field_10 = @utcNow()
+         item/field_11 = @utcNow()
+         item/field_14 = @outputs('Generate_Worker_Run_ID')
+         item/ClaimToken = @outputs('Current_Claim_Token')
+         item/ClaimedDate = @utcNow()
+      ## Current_Chunk_Records [Compose] runAfter={'Claim_Tracking_Chunk': ['Succeeded']}
+         inputs: @json( outputs('Get_Triggered_Chunk_Record')?['body/field_9'] )
+      ## Current_Chunk_Record_Count [Compose] runAfter={'Current_Chunk_Records': ['Succeeded']}
+         inputs: @length( outputs('Current_Chunk_Records') )
+      ## Chunk_Payload_Balanced [If] runAfter={'Current_Chunk_Record_Count': ['Succeeded']}
+         expression: {"and": [{"equals": ["@outputs('Current_Chunk_Record_Count')", "@int(\r\n outputs('Get_Triggered_Chunk_Record')?['body/field_5']\r\n)"]}]}
+        ## Fail_Tracking_Chunk_After_Worker_Error [OpenApiConnection] runAfter={'Chunk_Results_Balanced': ['TimedOut', 'Failed', 'Skipped']}
+           op: PatchItem
+           table = <LIST_CHUNKS>
+           id = @outputs('Get_Triggered_Chunk_Record')?['body/ID']
+           item/Title = @outputs('Get_Triggered_Chunk_Record')?['body/Title']
+           item/field_1 = @outputs('Get_Triggered_Chunk_Record')?['body/field_1']
+           item/field_2 = @outputs('Get_Triggered_Chunk_Record')?['body/field_2']
+           item/field_3 = @outputs('Get_Triggered_Chunk_Record')?['body/field_3']
+           item/field_4 = @outputs('Get_Triggered_Chunk_Record')?['body/field_4']
+           item/field_5 = @outputs('Get_Triggered_Chunk_Record')?['body/field_5']
+           item/field_6 = @int( coalesce( outputs('Get_Triggered_Chunk_Record')?['body/field_6'], 0 ) )
+           item/field_7 = @int(1)
+           item/field_9 = @outputs('Get_Triggered_Chunk_Record')?['body/field_9']
+           item/field_13 = @add( int( coalesce( outputs('Get_Triggered_Chunk_Record')?['body/field_13'], 0 ) ), 1 )
+           item/TotalChunkCount = @outputs('Get_Triggered_Chunk_Record')?['body/TotalChunkCount']
+           item/field_8/Value = Failed
+           item/field_10 = @outputs('Get_Triggered_Chunk_Record')?['body/field_10']
+           item/field_11 = @utcNow()
+           item/field_12 = @utcNow()
+           item/field_14 = @outputs('Generate_Worker_Run_ID')
+           item/field_15 = @concat( 'The chunk worker failed or timed out while processing chunk ', string( outputs('Get_Triggered_Chunk_Record')?['body/field_3'] ), '. Worker flow run: ', workflow()?['run']?['name'], '. Review the worker run history before retrying this chunk.' )
+        ## Current_Chunk_Tracking_Numbers [Select] runAfter={}
+           inputs: {"from": "@outputs('Current_Chunk_Records')", "select": "@item()?['TrackingNumber']"}
+        ## Get_Current_Chunk_Processing_Results [OpenApiConnection] runAfter={'Wait_for_Processing_Results_to_Settle': ['Succeeded']}
+           op: GetItems
+           table = <LIST_RESULTS>
+           $filter = @concat( 'ChunkNumber eq ', string( outputs('Get_Triggered_Chunk_Record')?['body/field_3'] ) )
+           $top = 5000
+        ## Filter_Current_Chunk_Results [Query] runAfter={'Get_Current_Chunk_Processing_Results': ['Succeeded']}
+           inputs: {"from": "@body('Get_Current_Chunk_Processing_Results')?['value']", "where": "@and(\r\n equals(\r\n item()?['field_1'],\r\n outputs('Get_Triggered_Chunk_Record')?['body/field_1']\r\n ),\r\n contains(\r\n body('Current_Chunk_Tracking_Numbers'),\r\n item()?['field_3']\r\n )\r\n)"}
+        ## Current_Chunk_Completed_Count [Compose] runAfter={'Filter_Current_Chunk_Results': ['Succeeded']}
+           inputs: @length( body('Filter_Current_Chunk_Results') )
+        ## Filter_Current_Chunk_Error_Results [Query] runAfter={'Current_Chunk_Completed_Count': ['Succeeded']}
+           inputs: {"from": "@body('Filter_Current_Chunk_Results')", "where": "@or(\r\n equals(\r\n item()?['field_4']?['Value'],\r\n 'Parsed Record Error'\r\n ),\r\n equals(\r\n item()?['field_4']?['Value'],\r\n 'Processing Failed'\r\n )\r\n)"}
+        ## Current_Chunk_Error_Count [Compose] runAfter={'Filter_Current_Chunk_Error_Results': ['Succeeded']}
+           inputs: @length( body('Filter_Current_Chunk_Error_Results') )
+        ## Chunk_Results_Balanced [If] runAfter={'Current_Chunk_Error_Count': ['Succeeded']}
+           expression: {"and": [{"equals": ["@and(\r\n equals(\r\n outputs('Current_Chunk_Completed_Count'),\r\n int(\r\n outputs('Get_Triggered_Chunk_Record')?['body/field_5']\r\n )\r\n ),\r\n equals(\r\n outputs('Current_Chunk_Error_Count'),\r\n 0\r\n )\r\n)", "@true"]}]}
+          ## Complete_Tracking_Chunk [OpenApiConnection] runAfter={}
+             op: PatchItem
+             table = <LIST_CHUNKS>
+             id = @outputs('Get_Triggered_Chunk_Record')?['body/ID']
+             item/Title = @outputs('Get_Triggered_Chunk_Record')?['body/Title']
+             item/field_1 = @outputs('Get_Triggered_Chunk_Record')?['body/field_1']
+             item/field_2 = @outputs('Get_Triggered_Chunk_Record')?['body/field_2']
+             item/field_3 = @outputs('Get_Triggered_Chunk_Record')?['body/field_3']
+             item/field_4 = @outputs('Get_Triggered_Chunk_Record')?['body/field_4']
+             item/field_5 = @outputs('Get_Triggered_Chunk_Record')?['body/field_5']
+             item/field_6 = @outputs('Current_Chunk_Completed_Count')
+             item/field_7 = @outputs('Current_Chunk_Error_Count')
+             item/field_9 = @outputs('Get_Triggered_Chunk_Record')?['body/field_9']
+             item/field_13 = @int( coalesce( outputs('Get_Triggered_Chunk_Record')?['body/field_13'], 0 ) )
+             item/TotalChunkCount = @outputs('Get_Triggered_Chunk_Record')?['body/TotalChunkCount']
+             item/field_8/Value = Completed
+             item/field_10 = @outputs('Get_Triggered_Chunk_Record')?['body/field_10']
+             item/field_11 = @utcNow()
+             item/field_12 = @utcNow()
+             item/field_14 = @outputs('Generate_Worker_Run_ID')
+          ## Increment_Chunks_Processed_This_Activation [IncrementVariable] runAfter={'Complete_Tracking_Chunk': ['Succeeded']}
+             inputs: {"name": "ChunksProcessedThisActivation", "value": 1}
+          -- ELSE
+          ## Fail_Unbalanced_Tracking_Chunk [OpenApiConnection] runAfter={}
+             op: PatchItem
+             table = <LIST_CHUNKS>
+             id = @outputs('Get_Triggered_Chunk_Record')?['body/ID']
+             item/Title = @outputs('Get_Triggered_Chunk_Record')?['body/Title']
+             item/field_1 = @outputs('Get_Triggered_Chunk_Record')?['body/field_1']
+             item/field_2 = @outputs('Get_Triggered_Chunk_Record')?['body/field_2']
+             item/field_3 = @outputs('Get_Triggered_Chunk_Record')?['body/field_3']
+             item/field_4 = @outputs('Get_Triggered_Chunk_Record')?['body/field_4']
+             item/field_5 = @outputs('Get_Triggered_Chunk_Record')?['body/field_5']
+             item/field_6 = @outputs('Current_Chunk_Completed_Count')
+             item/field_7 = @outputs('Current_Chunk_Error_Count')
+             item/field_9 = @outputs('Get_Triggered_Chunk_Record')?['body/field_9']
+             item/field_13 = @int( coalesce( outputs('Get_Triggered_Chunk_Record')?['body/field_13'], 0 ) )
+             item/TotalChunkCount = @outputs('Get_Triggered_Chunk_Record')?['body/TotalChunkCount']
+             item/field_8/Value = Failed
+             item/field_10 = @outputs('Get_Triggered_Chunk_Record')?['body/field_10']
+             item/field_11 = @utcNow()
+             item/field_12 = @utcNow()
+             item/field_14 = @outputs('Generate_Worker_Run_ID')
+             item/field_15 = @concat( 'Chunk reconciliation failed. Expected ', string( outputs('Get_Triggered_Chunk_Record')?['body/field_5'] ), ' result records, found ', string( outputs('Current_Chunk_Completed_Count') ), ', with ', string( outputs('Current_Chunk_Error_Count') ), ' processing error result(s).' )
+          ## Set_Fail_Unbalanced_Tracking_Chunk_Error_Message__ [SetVariable] runAfter={'Fail_Unbalanced_Tracking_Chunk': ['Succeeded']}
+             inputs: {"name": "LaneFatalErrorMessage", "value": "@concat(\r\n 'Chunk reconciliation failed. Expected ',\r\n string(\r\n outputs('Get_Triggered_Chunk_Record')?['body/field_5']\r\n ),\r\n ' processing result(s), found ',\r\n string(\r\n outputs('Current_Chunk_Completed_Count')\r\n ),\r\n ', with ',\r\n string(\r\n outputs('Current_Chunk_Error_Count')\r\n ),\r\n ' processing error result(s).'\r\n)"}
+          ## Set_Fail_Unbalanced_Tracking_Chunk_Error [SetVariable] runAfter={'Set_Fail_Unbalanced_Tracking_Chunk_Error_Message__': ['Succeeded']}
+             inputs: {"name": "LaneFatalError", "value": "@true"}
+        ## Set_Worker_Chunk_Failed_Error_Message_ [SetVariable] runAfter={'Fail_Tracking_Chunk_After_Worker_Error': ['Succeeded']}
+           inputs: {"name": "LaneFatalErrorMessage", "value": "@concat(\r\n 'Lane 4 failed while processing chunk ',\r\n string(\r\n outputs('Get_Triggered_Chunk_Record')?['body/field_3']\r\n ),\r\n '. Review flow run ',\r\n workflow()?['run']?['name'],\r\n '.'\r\n)"}
+        ## Set_Worker_Chunk_Failed_Error [SetVariable] runAfter={'Set_Worker_Chunk_Failed_Error_Message_': ['Succeeded']}
+           inputs: {"name": "LaneFatalError", "value": "@true"}
+        ## Wait_for_Processing_Results_to_Settle [Wait] runAfter={'Process_Current_Chunk_Records': ['Succeeded']}
+           inputs: {"interval": {"count": 15, "unit": "Second"}}
+        ## Process_Current_Chunk_Records [Foreach] runAfter={'Get_Active_Exception_Routing_Rules': ['Succeeded']}
+           runtimeConfiguration: {"concurrency": {"repetitions": 4}}
+          ## Chunk_Result_Does_Not_Exist [If] runAfter={'Find_Existing_Chunk_Result': ['Succeeded']}
+             expression: {"and": [{"equals": ["@length(\r\n body('Find_Existing_Chunk_Result')?['value']\r\n)", 0]}]}
+            ## Find_Active_Trace_for_Chunk_Record [OpenApiConnection] runAfter={'Current_Default_Reason': ['Succeeded']}
+               op: GetItems
+               table = <LIST_TRACE_WORKFLOW>
+               $filter = @concat( 'TrackingNumber eq ''', item()?['TrackingNumber'], '''' )
+               $top = 1
+            ## Active_Trace_Found_for_Chunk_Record [If] runAfter={'Find_Active_Trace_for_Chunk_Record': ['Succeeded']}
+               expression: {"and": [{"greater": ["@length(\r\n body('Find_Active_Trace_for_Chunk_Record')?['value']\r\n)", 0]}]}
+              ## Current_Active_Trace_Record_for_Chunk [Compose] runAfter={}
+                 inputs: @first( body('Find_Active_Trace_for_Chunk_Record')?['value'] )
+              ## Refresh_Active_Trace_from_Chunk [OpenApiConnection] runAfter={'Active_Trace_Patch_Body': ['Succeeded']}
+                 op: HttpRequest
+                 parameters/method = PATCH
+                 parameters/uri = @concat( '_api/web/lists/getbytitle(''Trace_Workflow'')/items(', string( outputs('Current_Active_Trace_Record_for_Chunk')?['ID'] ), ')' )
+                 parameters/headers = {"IF-MATCH": "*", "Content-Type": "application/json;odata=nometadata", "Accept": "application/json;odata=nometadata"}
+                 parameters/body = @outputs('Active_Trace_Patch_Body')
+              ## Active_Trace_Patch_Body [Compose] runAfter={'Current_Active_Trace_Record_for_Chunk': ['Succeeded']}
+                 inputs: @setProperty( setProperty( setProperty( setProperty( setProperty( setProperty( setProperty( json('{}'), 'CarrierStatus', coalesce( items('Process_Current_Chunk_Records')?['CarrierStatus'], '' ) ), 'CarrierStatusDescription', coalesce( items('Process_Current_Chunk_Records')?['CarrierStatusDescription'], '' ) ), 'ExceptionDescription', coalesce( items('Process_Current_Chunk_Records')?['ExceptionDescription'], '' ) ), 'ExceptionResolution', coalesce( items('Process_Current_Chunk_Records')?['ExceptionResolution'], '' ) ), 'ScheduledDeliveryDate', if( empty( items('Process_Current_Chunk_Records')?['ScheduledDeliveryDate'] ), null, items('Process_Current_Chunk_Records')?['ScheduledDeliveryDate'] )…
+              ## Write_Active_Updated_Chunk_Result [OpenApiConnection] runAfter={'Refresh_Active_Trace_from_Chunk': ['Succeeded']}
+                 op: PostItem
+                 table = <LIST_RESULTS>
+                 item/Title = @outputs('Current_Result_Key')
+                 item/field_1 = @outputs('Get_Triggered_Chunk_Record')?['body/field_1']
+                 item/field_2 = @outputs('Get_Triggered_Chunk_Record')?['body/field_2']
+                 item/field_3 = @items('Process_Current_Chunk_Records')?['TrackingNumber']
+                 item/field_6 = 1
+                 item/field_8 = @utcNow()
+                 item/field_4/Value = Active Updated
+                 item/field_5 = @outputs('Current_Active_Trace_Record_for_Chunk')?['ID']
+                 item/ShipperName = @items('Process_Current_Chunk_Records')?['ShipperName']
+                 item/ShipperAttention = @items('Process_Current_Chunk_Records')?['ShipperAttention']
+                 item/ShipToName = @items('Process_Current_Chunk_Records')?['ShipToName']
+                 item/ShipToAttention = @items('Process_Current_Chunk_Records')?['ShipToAttention']
+                 item/ShipperAddressLine1 = @items('Process_Current_Chunk_Records')?['ShipperAddressLine1']
+                 item/ShipToAddressLine1 = @items('Process_Current_Chunk_Records')?['ShipToAddressLine1']
+                 item/ShipperAddressLine2 = @items('Process_Current_Chunk_Records')?['ShipperAddressLine2']
+                 item/ShipToAddressLine2 = @items('Process_Current_Chunk_Records')?['ShipToAddressLine2']
+                 item/ShipperCity = @items('Process_Current_Chunk_Records')?['ShipperCity']
+                 item/ShipToCity = @items('Process_Current_Chunk_Records')?['ShipToCity']
+                 item/ShipperStateProvince = @items('Process_Current_Chunk_Records')?['ShipperStateProvince']
+                 item/ShipToStateProvince = @items('Process_Current_Chunk_Records')?['ShipToStateProvince']
+                 item/ShipperPostalCode = @items('Process_Current_Chunk_Records')?['ShipperPostalCode']
+                 item/ShipToPostalCode = @items('Process_Current_Chunk_Records')?['ShipToPostalCode']
+                 item/ShipperCountry = @items('Process_Current_Chunk_Records')?['ShipperCountry']
+                 item/ShipToCountry = @items('Process_Current_Chunk_Records')?['ShipToCountry']
+                 item/ShipToTelephone = @items('Process_Current_Chunk_Records')?['ShipToTelephone']
+                 item/ShipperLocationKey = @outputs('Current_Shipper_Location_Key')
+                 item/field_9 = @outputs('Current_Active_Trace_Record_for_Chunk')?['CaseNumber']
+                 item/CarrierStatus = @items('Process_Current_Chunk_Records')?['CarrierStatus']
+                 item/CarrierStatusDescription = @items('Process_Current_Chunk_Records')?['CarrierStatusDescription']
+                 item/ExceptionDescription = @items('Process_Current_Chunk_Records')?['ExceptionDescription']
+                 item/ExceptionResolution = @items('Process_Current_Chunk_Records')?['ExceptionResolution']
+                 item/ScheduledDeliveryDate = @if( empty( items('Process_Current_Chunk_Records')?['ScheduledDeliveryDate'] ), null, items('Process_Current_Chunk_Records')?['ScheduledDeliveryDate'] )
+                 item/ChunkNumber = @outputs('Get_Triggered_Chunk_Record')?['body/field_3']
+                 item/CaseCreationEligible = @false
+                 item/CaseCreationReason = Existing active TRACE case found; existing case number retained.
+                 item/CaseReviewDecision/Value = Auto - Dashboard Only
+              -- ELSE
+              ## Find_Historical_Trace_for_Chunk_Record [OpenApiConnection] runAfter={}
+                 op: GetItems
+                 table = <LIST_HISTORICAL>
+                 $filter = @concat( 'TrackingNumber eq ''', items('Process_Current_Chunk_Records')?['TrackingNumber'], '''' ) 
+                 $top = 1
+              ## Historical_Trace_Found_for_Chunk_Record [If] runAfter={'Find_Historical_Trace_for_Chunk_Record': ['Succeeded']}
+                 expression: {"and": [{"greater": ["@length(\r\n body('Find_Historical_Trace_for_Chunk_Record')?['value']\r\n)", 0]}]}
+                ## Current_Historical_Trace_Record_for_Chunk [Compose] runAfter={}
+                   inputs: @first( body('Find_Historical_Trace_for_Chunk_Record')?['value'] )
+                ## Write_Historical_Match_Chunk_Result [OpenApiConnection] runAfter={'Current_Historical_Trace_Record_for_Chunk': ['Succeeded']}
+                   op: PostItem
+                   table = <LIST_RESULTS>
+                   item/Title = @outputs('Current_Result_Key')
+                   item/field_1 = @outputs('Get_Triggered_Chunk_Record')?['body/field_1']
+                   item/field_2 = @outputs('Get_Triggered_Chunk_Record')?['body/field_2']
+                   item/field_3 = @items('Process_Current_Chunk_Records')?['TrackingNumber']
+                   item/field_6 = 1
+                   item/field_8 = @utcNow()
+                   item/field_4/Value = Historical Match
+                   item/field_5 = @outputs('Current_Historical_Trace_Record_for_Chunk')?['ID']
+                   item/ShipperName = @items('Process_Current_Chunk_Records')?['ShipperName'] 
+                   item/ShipperAttention = @items('Process_Current_Chunk_Records')?['ShipperAttention']
+                   item/ShipToName = @items('Process_Current_Chunk_Records')?['ShipToName']
+                   item/ShipToAttention = @items('Process_Current_Chunk_Records')?['ShipToAttention']
+                   item/ShipperAddressLine1 = @items('Process_Current_Chunk_Records')?['ShipperAddressLine1'] 
+                   item/ShipToAddressLine1 = @items('Process_Current_Chunk_Records')?['ShipToAddressLine1']
+                   item/ShipperAddressLine2 = @items('Process_Current_Chunk_Records')?['ShipperAddressLine2'] 
+                   item/ShipToAddressLine2 = @items('Process_Current_Chunk_Records')?['ShipToAddressLine2']
+                   item/ShipperCity = @items('Process_Current_Chunk_Records')?['ShipperCity'] 
+                   item/ShipToCity = @items('Process_Current_Chunk_Records')?['ShipToCity']
+                   item/ShipperStateProvince = @items('Process_Current_Chunk_Records')?['ShipperStateProvince'] 
+                   item/ShipToStateProvince = @items('Process_Current_Chunk_Records')?['ShipToStateProvince']
+                   item/ShipperPostalCode = @items('Process_Current_Chunk_Records')?['ShipperPostalCode'] 
+                   item/ShipToPostalCode = @items('Process_Current_Chunk_Records')?['ShipToPostalCode']
+                   item/ShipperCountry = @items('Process_Current_Chunk_Records')?['ShipperCountry'] 
+                   item/ShipToCountry = @items('Process_Current_Chunk_Records')?['ShipToCountry']
+                   item/ShipToTelephone = @items('Process_Current_Chunk_Records')?['ShipToTelephone']
+                   item/ShipperLocationKey = @outputs('Current_Shipper_Location_Key')
+                   item/field_9 = @outputs('Current_Historical_Trace_Record_for_Chunk')?['CaseNumber']
+                   item/CarrierStatus = @items('Process_Current_Chunk_Records')?['CarrierStatus']
+                   item/CarrierStatusDescription = @items('Process_Current_Chunk_Records')?['CarrierStatusDescription']
+                   item/ExceptionDescription = @items('Process_Current_Chunk_Records')?['ExceptionDescription']
+                   item/ExceptionResolution = @items('Process_Current_Chunk_Records')?['ExceptionResolution']
+                   item/ScheduledDeliveryDate = @if( empty( items('Process_Current_Chunk_Records')?['ScheduledDeliveryDate'] ), null, items('Process_Current_Chunk_Records')?['ScheduledDeliveryDate'] )
+                   item/ChunkNumber = @outputs('Get_Triggered_Chunk_Record')?['body/field_3']
+                   item/CaseCreationEligible = @false
+                   item/CaseCreationReason = Historical TRACE match found; no new case creation required.
+                   item/CaseReviewDecision/Value = Auto - Dashboard Only
+                -- ELSE
+                ## Write_Unmatched_Shipment_Chunk_Result [OpenApiConnection] runAfter={'Current_Routing_Rule': ['Succeeded']}
+                   op: PostItem
+                   table = <LIST_RESULTS>
+                   item/Title = @outputs('Current_Result_Key')
+                   item/field_1 = @outputs('Get_Triggered_Chunk_Record')?['body/field_1']
+                   item/field_2 = @outputs('Get_Triggered_Chunk_Record')?['body/field_2']
+                   item/field_3 = @items('Process_Current_Chunk_Records')?['TrackingNumber']
+                   item/field_6 = @int(1)
+                   item/field_8 = @utcNow()
+                   item/field_4/Value = @coalesce( outputs('Current_Routing_Rule')?['field_12']?['Value'], outputs('Current_Routing_Rule')?['field_12'], outputs('Current_Default_Outcome') )
+                   item/field_5 = @null
+                   item/ShipperName = @items('Process_Current_Chunk_Records')?['ShipperName']
+                   item/ShipperAttention = @items('Process_Current_Chunk_Records')?['ShipperAttention']
+                   item/ShipToName = @items('Process_Current_Chunk_Records')?['ShipToName']
+                   item/ShipToAttention = @items('Process_Current_Chunk_Records')?['ShipToAttention']
+                   item/ShipperAddressLine1 = @items('Process_Current_Chunk_Records')?['ShipperAddressLine1']
+                   item/ShipToAddressLine1 = @items('Process_Current_Chunk_Records')?['ShipToAddressLine1']
+                   item/ShipperAddressLine2 = @items('Process_Current_Chunk_Records')?['ShipperAddressLine2']
+                   item/ShipToAddressLine2 = @items('Process_Current_Chunk_Records')?['ShipToAddressLine2']
+                   item/ShipperCity = @items('Process_Current_Chunk_Records')?['ShipperCity']
+                   item/ShipToCity = @items('Process_Current_Chunk_Records')?['ShipToCity']
+                   item/ShipperStateProvince = @items('Process_Current_Chunk_Records')?['ShipperStateProvince']
+                   item/ShipToStateProvince = @items('Process_Current_Chunk_Records')?['ShipToStateProvince']
+                   item/ShipperPostalCode = @items('Process_Current_Chunk_Records')?['ShipperPostalCode']
+                   item/ShipToPostalCode = @items('Process_Current_Chunk_Records')?['ShipToPostalCode']
+                   item/ShipperCountry = @items('Process_Current_Chunk_Records')?['ShipperCountry']
+                   item/ShipToCountry = @items('Process_Current_Chunk_Records')?['ShipToCountry']
+                   item/ShipToTelephone = @items('Process_Current_Chunk_Records')?['ShipToTelephone']
+                   item/ShipperLocationKey = @outputs('Current_Shipper_Location_Key')
+                   item/field_9 = @null
+                   item/CarrierStatus = @items('Process_Current_Chunk_Records')?['CarrierStatus']
+                   item/CarrierStatusDescription = @items('Process_Current_Chunk_Records')?['CarrierStatusDescription']
+                   item/ExceptionDescription = @items('Process_Current_Chunk_Records')?['ExceptionDescription']
+                   item/ExceptionResolution = @items('Process_Current_Chunk_Records')?['ExceptionResolution']
+                   item/ScheduledDeliveryDate = @if( empty( items('Process_Current_Chunk_Records')?['ScheduledDeliveryDate'] ), null, items('Process_Current_Chunk_Records')?['ScheduledDeliveryDate'] )
+                   item/ChunkNumber = @outputs('Get_Triggered_Chunk_Record')?['body/field_3']
+                   item/CaseCreationEligible = @coalesce( outputs('Current_Routing_Rule')?['field_13'], false )
+                   item/CaseCreationReason = @coalesce( outputs('Current_Routing_Rule')?['field_14'], outputs('Current_Default_Reason') )
+                   item/CaseReviewDecision/Value = @if( empty( coalesce( outputs('Current_Routing_Rule')?['field_12']?['Value'], outputs('Current_Routing_Rule')?['field_12'] ) ), outputs('Current_Default_Review_Decision'), if( equals( coalesce( outputs('Current_Routing_Rule')?['field_12']?['Value'], outputs('Current_Routing_Rule')?['field_12'] ), 'New Case Required' ), 'Auto - Create TRACE Case', if( or( equals( coalesce( outputs('Current_Routing_Rule')?['field_12']?['Value'], outputs('Current_Routing_Rule')?['field_12'] ), 'Dashboard Only - No …
+                ## Current_Combined_Exception_Text [Compose] runAfter={}
+                   inputs: @toUpper( trim( concat( coalesce( items('Process_Current_Chunk_Records')?['ExceptionDescription'], '' ), ' ', coalesce( items('Process_Current_Chunk_Records')?['ExceptionResolution'], '' ) ) ) )
+                ## Find_Matching_Routing_Rules [Query] runAfter={'Current_Combined_Exception_Text': ['Succeeded']}
+                   inputs: {"from": "@body('Get_Active_Exception_Routing_Rules')?['value']", "where": "@and(\r\n equals(\r\n item()?['field_2'],\r\n true\r\n ),\r\n or(\r\n empty(\r\n trim(\r\n coalesce(\r\n item()?['field_4'],\r\n ''\r\n )\r\n )\r\n ),\r\n equals(\r\n toUpper(\r\n trim(\r\n coalesce(\r\n item()?['field_4'],\r\n ''\r\n )\r\n )\r\n ),\r\n toUpper(\r\n trim(\r\n coalesce(\r\n outputs('Current_Shipper_Location_Key'),\r\n ''\r\n )\r\n )\r\n )\r\n )\r\n ),\r\n if(\r\n equals(\r\n item()?['field_7']?['Value'],\r\n 'Equals'\r\n ),\r\n equals(\r\n toUpper(\r\n trim(\r\n coalesce(\r\n if(\r\n equals(\r\n item()?['field_6']?['Value'],\r\n 'ExceptionDescription'\r\n ),\r\n items('Process_Current_Chunk_Records')?…
+                ## Current_Routing_Rule [Compose] runAfter={'Find_Matching_Routing_Rules': ['Succeeded']}
+                   inputs: @if( or( equals( outputs('Current_Has_Return_Condition'), true ), equals( outputs('Current_Has_Weather_Emergency'), true ), equals( outputs('Current_Has_Timing_Carrier_Delay'), true ), equals( outputs('Current_Has_Unresolved_Address_Issue'), true ) ), json('{}'), if( greater( length( body('Find_Matching_Routing_Rules') ), 0 ), first( body('Find_Matching_Routing_Rules') ), json('{}') ) )
+            ## Current_Shipper_Location_Key [Compose] runAfter={}
+               inputs: @toUpper( concat( trim( coalesce( items('Process_Current_Chunk_Records')?['ShipperAddressLine1'], '' ) ), '|', trim( coalesce( items('Process_Current_Chunk_Records')?['ShipperCity'], '' ) ), '|', trim( coalesce( items('Process_Current_Chunk_Records')?['ShipperStateProvince'], '' ) ) ) )
+            ## Current_Operational_Location [Compose] runAfter={'Current_Shipper_Location_Key': ['Succeeded']}
+               inputs: @if( or( contains( outputs('Current_Shipper_Location_Key'), '<ADDRESS-A>' ), contains( outputs('Current_Shipper_Location_Key'), '<LOCATION-A RD>' ), contains( outputs('Current_Shipper_Location_Key'), '<LOCATION-A ROAD>' ) ), 'Location A', if( or( contains( outputs('Current_Shipper_Location_Key'), '<ADDRESS-B>' ), contains( outputs('Current_Shipper_Location_Key'), '<LOCATION-B PKWY>' ), contains( outputs('Current_Shipper_Location_Key'), '<LOCATION-B PARKWAY>' ) ), 'Location B', 'Other' ) )
+            ## Current_Has_Exception_Information [Compose] runAfter={'Current_Has_Timing_Carrier_Delay': ['Succeeded']}
+               inputs: @not( empty( trim( concat( coalesce( items('Process_Current_Chunk_Records')?['CarrierStatusDescription'], '' ), coalesce( items('Process_Current_Chunk_Records')?['ExceptionDescription'], '' ), coalesce( items('Process_Current_Chunk_Records')?['ExceptionResolution'], '' ) ) ) ) )
+            ## Current_Default_Outcome [Compose] runAfter={'Current_Has_Exception_Information': ['Succeeded']}
+               inputs: @if( equals( outputs('Current_Has_Return_Condition'), true ), if( or( equals( outputs('Current_Return_Outreach_Destination'), 'Location A' ), equals( outputs('Current_Return_Outreach_Destination'), 'Location B' ), equals( outputs('Current_Return_Outreach_Destination'), 'Location C' ) ), 'Communication Review', 'Reference History - No Action' ), if( equals( outputs('Current_Has_Weather_Emergency'), true ), if( or( equals( outputs('Current_Operational_Location'), 'Location A' ), equals( outputs('Current_Operational_Location'), 'Location B' ) ), 'Operational Dashboard - No Action', 'Reference History - No Action' ), if( equals( outputs('Current_Has_Timing_Carrier_Delay'), true ), if( or( equal…
+            ## Current_Default_Review_Decision [Compose] runAfter={'Current_Default_Outcome': ['Succeeded']}
+               inputs: @if( or( equals( outputs('Current_Default_Outcome'), 'Manual Classification' ), equals( outputs('Current_Default_Outcome'), 'Needs Case Review' ) ), 'Pending Review', 'Auto - Dashboard Only' )
+            ## Current_Default_Reason [Compose] runAfter={'Current_Default_Review_Decision': ['Succeeded']}
+               inputs: @if( equals( outputs('Current_Has_Weather_Emergency'), true ), 'Weather or emergency-related delay retained for informational reporting. No case review is required.', if( equals( outputs('Current_Default_Outcome'), 'Communication Review' ), if( equals( outputs('Current_Has_Return_Condition'), true ), concat( 'Return activity requires communication review for ', outputs('Current_Return_Outreach_Destination'), '.' ), 'Operational shipment has an unresolved address issue and requires communication review.' ), if( equals( outputs('Current_Default_Outcome'), 'Needs Case Review' ), 'Operational shipment has a timing or carrier-delay condition requiring manual review.', if( equals( outputs('Current…
+            ## Current_Return_Outreach_Destination [Compose] runAfter={'Current_Operational_Location': ['Succeeded']}
+               inputs: @if( contains( toUpper( coalesce( items('Process_Current_Chunk_Records')?['ShipperName'], '' ) ), 'CASH RECEIPTS' ), 'No Outreach', if( or( contains( outputs('Current_Shipper_Location_Key'), '<ADDRESS-A>' ), contains( outputs('Current_Shipper_Location_Key'), '<LOCATION-A RD>' ), contains( outputs('Current_Shipper_Location_Key'), '<LOCATION-A ROAD>' ) ), 'Location A', if( or( contains( outputs('Current_Shipper_Location_Key'), '<ADDRESS-B>' ), contains( outputs('Current_Shipper_Location_Key'), '<LOCATION-B PKWY>' ), contains( outputs('Current_Shipper_Location_Key'), '<LOCATION-B PARKWAY>' ) ), 'Location B', if( or( contains( outputs('Current_Shipper_Location_Key'), '<ADDRESS-C>' ), and( contains…
+            ## Current_Has_Return_Condition [Compose] runAfter={'Current_Has_Unresolved_Address_Issue': ['Succeeded']}
+               inputs: @or( contains( toUpper( concat( coalesce( items('Process_Current_Chunk_Records')?['CarrierStatusDescription'], '' ), ' ', coalesce( items('Process_Current_Chunk_Records')?['ExceptionDescription'], '' ), ' ', coalesce( items('Process_Current_Chunk_Records')?['ExceptionResolution'], '' ) ) ), 'RETURNED TO THE SENDER' ), contains( toUpper( concat( coalesce( items('Process_Current_Chunk_Records')?['CarrierStatusDescription'], '' ), ' ', coalesce( items('Process_Current_Chunk_Records')?['ExceptionDescription'], '' ), ' ', coalesce( items('Process_Current_Chunk_Records')?['ExceptionResolution'], '' ) ) ), 'RETURN TO THE SENDER' ), contains( toUpper( concat( coalesce( items('Process_Current_Chunk_R…
+            ## Current_Address_Issue_Is_Resolved [Compose] runAfter={'Current_Return_Outreach_Destination': ['Succeeded']}
+               inputs: @and( or( contains( toUpper( coalesce( items('Process_Current_Chunk_Records')?['CarrierStatusDescription'], '' ) ), 'ADDRESS' ), contains( toUpper( coalesce( items('Process_Current_Chunk_Records')?['ExceptionDescription'], '' ) ), 'ADDRESS' ), contains( toUpper( coalesce( items('Process_Current_Chunk_Records')?['ExceptionDescription'], '' ) ), 'APARTMENT' ), contains( toUpper( coalesce( items('Process_Current_Chunk_Records')?['ExceptionDescription'], '' ) ), 'SUITE' ), contains( toUpper( coalesce( items('Process_Current_Chunk_Records')?['ExceptionDescription'], '' ) ), 'STREET NUMBER' ) ), or( contains( toUpper( coalesce( items('Process_Current_Chunk_Records')?['ExceptionResolution'], '' ) )…
+            ## Current_Has_Unresolved_Address_Issue [Compose] runAfter={'Current_Address_Issue_Is_Resolved': ['Succeeded']}
+               inputs: @and( or( contains( toUpper( coalesce( items('Process_Current_Chunk_Records')?['CarrierStatusDescription'], '' ) ), 'ADDRESS' ), contains( toUpper( coalesce( items('Process_Current_Chunk_Records')?['ExceptionDescription'], '' ) ), 'ADDRESS' ), contains( toUpper( coalesce( items('Process_Current_Chunk_Records')?['ExceptionDescription'], '' ) ), 'APARTMENT' ), contains( toUpper( coalesce( items('Process_Current_Chunk_Records')?['ExceptionDescription'], '' ) ), 'SUITE' ), contains( toUpper( coalesce( items('Process_Current_Chunk_Records')?['ExceptionDescription'], '' ) ), 'UNIT NUMBER' ), contains( toUpper( coalesce( items('Process_Current_Chunk_Records')?['ExceptionDescription'], '' ) ), 'STRE…
+            ## Current_Has_Timing_Carrier_Delay [Compose] runAfter={'Current_Has_Weather_Emergency': ['Succeeded']}
+               inputs: @or( contains( toUpper( concat( coalesce( items('Process_Current_Chunk_Records')?['CarrierStatusDescription'], '' ), ' ', coalesce( items('Process_Current_Chunk_Records')?['ExceptionDescription'], '' ), ' ', coalesce( items('Process_Current_Chunk_Records')?['ExceptionResolution'], '' ) ) ), 'INCORRECTLY SORTED' ), contains( toUpper( concat( coalesce( items('Process_Current_Chunk_Records')?['CarrierStatusDescription'], '' ), ' ', coalesce( items('Process_Current_Chunk_Records')?['ExceptionDescription'], '' ), ' ', coalesce( items('Process_Current_Chunk_Records')?['ExceptionResolution'], '' ) ) ), 'MECHANICAL FAILURE' ), contains( toUpper( concat( coalesce( items('Process_Current_Chunk_Records…
+            ## Current_Has_Weather_Emergency [Compose] runAfter={'Current_Has_Return_Condition': ['Succeeded']}
+               inputs: @or( contains( toUpper( concat( coalesce( items('Process_Current_Chunk_Records')?['CarrierStatusDescription'], '' ), ' ', coalesce( items('Process_Current_Chunk_Records')?['ExceptionDescription'], '' ), ' ', coalesce( items('Process_Current_Chunk_Records')?['ExceptionResolution'], '' ) ) ), 'SEVERE WEATHER' ), contains( toUpper( concat( coalesce( items('Process_Current_Chunk_Records')?['CarrierStatusDescription'], '' ), ' ', coalesce( items('Process_Current_Chunk_Records')?['ExceptionDescription'], '' ), ' ', coalesce( items('Process_Current_Chunk_Records')?['ExceptionResolution'], '' ) ) ), 'EMERGENCY SITUATION' ), contains( toUpper( concat( coalesce( items('Process_Current_Chunk_Records')?…
+            -- ELSE
+          ## Current_Result_Key [Compose] runAfter={}
+             inputs: @concat( outputs('Get_Triggered_Chunk_Record')?['body/field_1'], '|', items('Process_Current_Chunk_Records')?['TrackingNumber'] )
+          ## Find_Existing_Chunk_Result [OpenApiConnection] runAfter={'Current_Result_Key': ['Succeeded']}
+             op: GetItems
+             table = <LIST_RESULTS>
+             $filter = @concat( 'Title eq ''', replace( outputs('Current_Result_Key'), '''', '''''' ), '''' )
+             $top = 1
+        ## Get_Active_Exception_Routing_Rules [OpenApiConnection] runAfter={'Current_Chunk_Tracking_Numbers': ['Succeeded']}
+           op: GetItems
+           table = <LIST_ROUTING_RULES>
+           $filter = field_2 eq 1
+           $orderby = field_1 asc
+        -- ELSE
+        ## Set_Chunk_Unbalanced [SetVariable] runAfter={'Set_Chunk_Unbalanced_Error_Message_': ['Succeeded']}
+           inputs: {"name": "LaneFatalError", "value": "@true"}
+        ## Set_Chunk_Unbalanced_Error_Message_ [SetVariable] runAfter={}
+           inputs: {"name": "LaneFatalErrorMessage", "value": "@concat(\r\n 'Chunk payload count did not match ExpectedCount. Chunk ',\r\n string(\r\n outputs('Get_Triggered_Chunk_Record')?['body/field_3']\r\n ),\r\n ' expected ',\r\n string(\r\n outputs('Get_Triggered_Chunk_Record')?['body/field_5']\r\n ),\r\n ' record(s), but the payload contained ',\r\n string(\r\n outputs('Current_Chunk_Record_Count')\r\n ),\r\n '.'\r\n)"}
+      ## Current_Claim_Token [Compose] runAfter={'Generate_Worker_Run_ID': ['Succeeded']}
+         inputs: @concat( 'LANE-', string( outputs('Get_Triggered_Chunk_Record')?['body/WorkerLane'] ), '-CHUNK-', string( outputs('Get_Triggered_Chunk_Record')?['body/field_3'] ), '-', substring( guid(), 0, 8 ) )
+      -- ELSE
+      ## Set_Lane_Fatal_Error [SetVariable] runAfter={'Set_Lane_Fatal_Error_Message': ['Succeeded']}
+         inputs: {"name": "LaneFatalError", "value": "@true"}
+      ## Set_Lane_Fatal_Error_Message [SetVariable] runAfter={}
+         inputs: {"name": "LaneFatalErrorMessage", "value": "@concat(\r\n 'The selected chunk was no longer Pending or did not belong to Lane 4. Chunk ID: ',\r\n string(\r\n outputs('Get_Triggered_Chunk_Record')?['body/ID']\r\n ),\r\n '.'\r\n)"}
+    -- ELSE
+    ## No_Lane_Work_Remaining [SetVariable] runAfter={}
+       inputs: {"name": "NoLaneWorkRemaining", "value": "@true"}
+  ## Get_Pending_Chunk_Source [OpenApiConnection] runAfter={}
+     op: GetItems
+     table = <LIST_CHUNKS>
+     $filter = field_8 eq 'Pending' and WorkerLane eq 4
+     $orderby = ID asc
+     $top = 1
+## Initialize_Lane_Fatal_Error [InitializeVariable] runAfter={'Initialize_Maximum_Chunks_This_Activation': ['Succeeded']}
+   inputs: {"variables": [{"name": "LaneFatalError", "type": "boolean", "value": false}]}
+## Initialize_Lane_Fatal_Error_Message [InitializeVariable] runAfter={'Initialize_Lane_Fatal_Error': ['Succeeded']}
+   inputs: {"variables": [{"name": "LaneFatalErrorMessage", "type": "string"}]}
+## Lane_Activation_Failed [If] runAfter={'Process_Lane_Until_Empty_or_Limit_Reached': ['Succeeded']}
+   expression: {"and": [{"equals": ["@equals(\r\n variables('LaneFatalError'),\r\n true\r\n)", "@true"]}]}
+  ## Terminate [Terminate] runAfter={}
+     inputs: {"runStatus": "Failed", "runError": {"message": "@variables('LaneFatalErrorMessage')"}}
+  -- ELSE

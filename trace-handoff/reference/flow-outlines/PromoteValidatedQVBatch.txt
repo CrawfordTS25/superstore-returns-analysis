@@ -1,0 +1,111 @@
+TRIGGER manual: {"type": "Request", "kind": "Button", "inputs": {"schema": {"type": "object", "properties": {"text_1": {"title": "Input 1", "type": "string", "x-ms-dynamically-added": true, "description": "BatchKey", "x-ms-content-hint": "TEXT"}, "text_2": {"title": "Input 2", "type": "string", "x-ms-dynamically-added": true, "description": "ProcessingCycle", "x-ms-content-hint": "TEXT"}, "text_3": {"title": "Input 3", "type": "string", "x-ms-dynamically-added": true, "description": "ExpectedChunkCount", "x-ms-content-hint": "TEXT"}, "text_4": {"title": "Input 4", "type": "string", "x-ms-dynamically-added": true, "description": "CreatedChunkCount", "x-ms-content-hint": "TEXT"}, "text_5": {"title": "Input 5", "type": "string", "x-ms-dynamically-added": true, "description": "BatchFileIDsJson", "x-ms-content-hint": "TEXT"}, "text_6": {"title": "Input 6", "type": "string", "x-ms-dynamically-added": true, "description": "BatchFileNamesJson", "x-ms-content-hint": "TEXT"}, "text": {"description": "ImportRunID", "title": "Input 7", "type": "string", "x-ms-content-hint": "TEXT", "x-ms-dynamically-added": true}}, "required": ["text_1", "text_2", "text_3", "text_4", "text_5", "text_6", "text"]}}, "metadata": {"operationMetadataId": "<OPERATION_METADATA_ID>"}}
+## Initialize_PromotionSucceeded [InitializeVariable] runAfter={}
+   inputs: {"variables": [{"name": "PromotionSucceeded", "type": "boolean", "value": false}]}
+## Initialize_PublicationStatus [InitializeVariable] runAfter={'Initialize_PromotionSucceeded': ['Succeeded']}
+   inputs: {"variables": [{"name": "PublicationStatus", "type": "string", "value": "Validation Pending"}]}
+## Initialize_ProcessedFolderPath [InitializeVariable] runAfter={'Initialize_PublicationStatus': ['Succeeded']}
+   inputs: {"variables": [{"name": "ProcessedFolderPath", "type": "string"}]}
+## Initialize_MovedFileCount [InitializeVariable] runAfter={'Initialize_ProcessedFolderPath': ['Succeeded']}
+   inputs: {"variables": [{"name": "MovedFileCount", "type": "integer", "value": 0}]}
+## Initialize_ExpectedFileCount [InitializeVariable] runAfter={'Initialize_MovedFileCount': ['Succeeded']}
+   inputs: {"variables": [{"name": "ExpectedFileCount", "type": "integer", "value": 0}]}
+## Initialize_RefreshRequested [InitializeVariable] runAfter={'Initialize_ExpectedFileCount': ['Succeeded']}
+   inputs: {"variables": [{"name": "RefreshRequested", "type": "boolean", "value": false}]}
+## Initialize_FailureReason [InitializeVariable] runAfter={'Initialize_RefreshRequested': ['Succeeded']}
+   inputs: {"variables": [{"name": "FailureReason", "type": "string"}]}
+## Initialize_BatchFileIDs [InitializeVariable] runAfter={'Initialize_FailureReason': ['Succeeded']}
+   inputs: {"variables": [{"name": "BatchFileIDs", "type": "array", "value": []}]}
+## Initialize_BatchFileNames [InitializeVariable] runAfter={'Initialize_BatchFileIDs': ['Succeeded']}
+   inputs: {"variables": [{"name": "BatchFileNames", "type": "array", "value": []}]}
+## Validate_Promotion_Request [Scope] runAfter={'Initialize_AlreadyPublishedCount': ['Succeeded']}
+  ## Validation_Errors [Compose] runAfter={}
+     inputs: @concat( if( empty(triggerBody()?['text']), 'ImportRunID is missing. ', '' ), if( empty(triggerBody()?['text_1']), 'BatchKey is missing. ', '' ), if( not( or( equals( toLower( trim( string( coalesce( triggerBody()?['text_2'], '' ) ) ) ), 'morning' ), equals( toLower( trim( string( coalesce( triggerBody()?['text_2'], '' ) ) ) ), 'morning qv' ), equals( toLower( trim( string( coalesce( triggerBody()?['text_2'], '' ) ) ) ), 'afternoon' ), equals( toLower( trim( string( coalesce( triggerBody()?['text_2'], '' ) ) ) ), 'afternoon qv' ) ) ), 'ProcessingCycle is invalid. ', '' ), if( or( empty(triggerBody()?['text_3']), empty(triggerBody()?['text_4']) ), 'Chunk counts are missing. ', if( or( lessOrE…
+  ## Promotion_Request_Is_Valid [If] runAfter={'Validation_Errors': ['Succeeded']}
+     expression: {"equals": ["@outputs('Validation_Errors')", ""]}
+    ## Parse_Batch_File_IDs [ParseJson] runAfter={}
+       inputs: {"content": "@triggerBody()['text_5']", "schema": {"type": "array", "items": {"type": "string"}}}
+    ## Parse_Batch_File_Names [ParseJson] runAfter={'Parse_Batch_File_IDs': ['Succeeded']}
+       inputs: {"content": "@triggerBody()['text_6']", "schema": {"type": "array", "items": {"type": "string"}}}
+    ## Set_BatchFileIDs [SetVariable] runAfter={'Parse_Batch_File_Names': ['Succeeded']}
+       inputs: {"name": "BatchFileIDs", "value": "@body('Parse_Batch_File_IDs')"}
+    ## Set_BatchFileNames [SetVariable] runAfter={'Set_BatchFileIDs': ['Succeeded']}
+       inputs: {"name": "BatchFileNames", "value": "@body('Parse_Batch_File_Names')"}
+    ## Set_ExpectedFileCount [SetVariable] runAfter={'Set_BatchFileNames': ['Succeeded']}
+       inputs: {"name": "ExpectedFileCount", "value": "@length(variables('BatchFileIDs'))"}
+    ## File_Arrays_Are_Valid [If] runAfter={'Set_ExpectedFileCount': ['Succeeded']}
+       expression: {"and": [{"equals": ["@and(\r\n greater(\r\n length(variables('BatchFileIDs')),\r\n 0\r\n ),\r\n equals(\r\n length(variables('BatchFileIDs')),\r\n length(variables('BatchFileNames'))\r\n )\r\n)", "@true"]}]}
+      ## Processing_Cycle_Is_Morning [If] runAfter={}
+         expression: {"equals": ["@contains(\r\n toLower(trim(triggerBody()?['text_2'])),\r\n 'morning'\r\n)", "@true"]}
+        ## Set_Morning_Processed_Folder [SetVariable] runAfter={}
+           inputs: {"name": "ProcessedFolderPath", "value": "/QV Automation Files/Processed/Morning"}
+        -- ELSE
+        ## Processing_Cycle_Is_Afternoon [If] runAfter={}
+           expression: {"equals": ["@contains(\r\n toLower(trim(triggerBody()?['text_2'])),\r\n 'afternoon'\r\n)", "@true"]}
+          ## Set_Afternoon_Processed_Folder [SetVariable] runAfter={}
+             inputs: {"name": "ProcessedFolderPath", "value": "/QV Automation Files/Processed/Afternoon"}
+          -- ELSE
+          ## Set_Invalid_Processing_Cycle_Reason [SetVariable] runAfter={}
+             inputs: {"name": "FailureReason", "value": "ProcessingCycle must be Morning, Morning QV, Afternoon, or Afternoon QV."}
+          ## Set_Invalid_Processing_Cycle_Status [SetVariable] runAfter={'Set_Invalid_Processing_Cycle_Reason': ['Succeeded']}
+             inputs: {"name": "PublicationStatus", "value": "Failed Validation"}
+      ## Process_Validated_Batch_Files [Foreach] runAfter={'Processing_Cycle_Is_Morning': ['Succeeded']}
+        ## Current_File_ID [Compose] runAfter={}
+           inputs: @variables('BatchFileIDs')[item()]
+        ## Current_File_Name [Compose] runAfter={'Current_File_ID': ['Succeeded']}
+           inputs: @variables('BatchFileNames')[item()]
+        ## Destination_File_Path [Compose] runAfter={'Current_File_Name': ['Succeeded']}
+           inputs: @concat( variables('ProcessedFolderPath'), '/', outputs('Current_File_Name') )
+        ## Find_Destination_File [OpenApiConnection] runAfter={'Destination_File_Path': ['Succeeded']}
+           op: GetFileItems
+           table = <LIBRARY_QV_FILES>
+           $filter = @concat( 'FileLeafRef eq ''', replace( outputs('Current_File_Name'), '''', '''''' ), '''' )
+           $top = 1
+           folderPath = @variables('ProcessedFolderPath')
+        ## Destination_File_Already_Exists [If] runAfter={'Find_Destination_File': ['SUCCEEDED']}
+           expression: {"and": [{"equals": ["@greater(\r\n length(\r\n body('Find_Destination_File')?['value']\r\n ),\r\n 0\r\n)", "@true"]}]}
+          ## Increment_AlreadyPublishedCount_v2 [IncrementVariable] runAfter={}
+             inputs: {"name": "AlreadyPublishedCount", "value": 1}
+          -- ELSE
+          ## Move_Current_File_to_Processed_v2_ [OpenApiConnection] runAfter={}
+             op: MoveFileAsync
+             parameters/sourceFileId = @outputs('Current_File_ID')
+             parameters/destinationDataset = https://<tenant>.sharepoint.com/sites/<site>
+             parameters/destinationFolderPath = @variables('ProcessedFolderPath')
+             parameters/nameConflictBehavior = 0
+          ## Increment_MovedFileCount_v2 [IncrementVariable] runAfter={'Move_Current_File_to_Processed_v2_': ['SUCCEEDED']}
+             inputs: {"name": "MovedFileCount", "value": 1}
+      ## All_Expected_Files_Published [If] runAfter={'Process_Validated_Batch_Files': ['Succeeded']}
+         expression: {"and": [{"equals": ["@add(\r\n variables('MovedFileCount'),\r\n variables('AlreadyPublishedCount')\r\n)", "@variables('ExpectedFileCount')"]}]}
+        ## Set_Published_Status [SetVariable] runAfter={}
+           inputs: {"name": "PublicationStatus", "value": "@if(\r\n equals(\r\n variables('AlreadyPublishedCount'),\r\n variables('ExpectedFileCount')\r\n ),\r\n 'Already Published',\r\n if(\r\n equals(\r\n variables('MovedFileCount'),\r\n variables('ExpectedFileCount')\r\n ),\r\n 'Published',\r\n 'Published - Mixed Retry'\r\n )\r\n)"}
+        ## Set_Promotion_Succeeded [SetVariable] runAfter={'Set_Published_Status': ['Succeeded']}
+           inputs: {"name": "PromotionSucceeded", "value": true}
+        ## Clear_Failure_Reason [SetVariable] runAfter={'Set_Promotion_Succeeded': ['Succeeded']}
+           inputs: {"name": "FailureReason", "value": "@{string(null)}"}
+        -- ELSE
+        ## Set_File_Promotion_Count_Failure [SetVariable] runAfter={}
+           inputs: {"name": "FailureReason", "value": "@concat(\r\n 'File publication count mismatch. Expected ',\r\n string(variables('ExpectedFileCount')),\r\n ' file(s), moved ',\r\n string(variables('MovedFileCount')),\r\n ', and found ',\r\n string(variables('AlreadyPublishedCount')),\r\n ' already published.'\r\n)"}
+        ## Set_File_Promotion_Failure_Status [SetVariable] runAfter={'Set_File_Promotion_Count_Failure': ['Succeeded']}
+           inputs: {"name": "PublicationStatus", "value": "Failed - File Count Mismatch"}
+      -- ELSE
+      ## Set_File_Array_Count_Failure [SetVariable] runAfter={}
+         inputs: {"name": "FailureReason", "value": "Batch file arrays must contain at least one file, and the file ID and filename counts must match."}
+      ## Set_File_Array_Validation_Status [SetVariable] runAfter={'Set_File_Array_Count_Failure': ['Succeeded']}
+         inputs: {"name": "PublicationStatus", "value": "Failed Validation"}
+    -- ELSE
+    ## Set_Validation_Failure_Reason [SetVariable] runAfter={}
+       inputs: {"name": "FailureReason", "value": "@{outputs('Validation_Errors')}"}
+    ## Set_Failed_Validation_Status [SetVariable] runAfter={'Set_Validation_Failure_Reason': ['Succeeded']}
+       inputs: {"name": "PublicationStatus", "value": "Failed Validation"}
+## Return_QV_Promotion_Result [Response] runAfter={'Handle_Promotion_Failure': ['Succeeded', 'Skipped']}
+   inputs: {"schema": {"type": "object", "properties": {"promotionsucceeded": {"title": "PromotionSucceeded", "x-ms-dynamically-added": true, "type": "string"}, "refreshrequested": {"title": "RefreshRequested", "x-ms-dynamically-added": true, "type": "string"}, "publicationstatus": {"title": "PublicationStatus", "x-ms-dynamically-added": true, "type": "string"}, "processedfolderpath": {"title": "ProcessedFolderPath", "x-ms-dynamically-added": true, "type": "string"}, "movedfilecount": {"title": "MovedFileCount", "x-ms-dynamically-added": true, "type": "number"}, "expectedfilecount": {"title": "ExpectedFileCount", "x-ms-dynamically-added": true, "type": "number"}, "failurereason": {"title": "FailureReas…
+## Handle_Promotion_Failure [Scope] runAfter={'Validate_Promotion_Request': ['Failed', 'TimedOut']}
+  ## Promotion_Has_Not_Already_Succeeded [If] runAfter={}
+     expression: {"and": [{"equals": ["@variables('PromotionSucceeded')", "@false"]}]}
+    ## Set_Promotion_Failure_Reason [SetVariable] runAfter={}
+       inputs: {"name": "FailureReason", "value": "File promotion failed or timed out. Review the child-flow run history for the failed SharePoint action.\n"}
+    ## Set_Promotion_Failure_Status [SetVariable] runAfter={'Set_Promotion_Failure_Reason': ['Succeeded']}
+       inputs: {"name": "PublicationStatus", "value": "Failed - Promotion Error"}
+    -- ELSE
+## Initialize_AlreadyPublishedCount [InitializeVariable] runAfter={'Initialize_BatchFileNames': ['Succeeded']}
+   inputs: {"variables": [{"name": "AlreadyPublishedCount", "type": "integer", "value": 0}]}

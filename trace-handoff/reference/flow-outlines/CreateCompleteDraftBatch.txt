@@ -1,0 +1,37 @@
+TRIGGER manual: {"type": "Request", "kind": "PowerAppV2", "inputs": {"schema": {"type": "object", "properties": {"text": {"description": "BatchID", "title": "Text", "type": "string", "x-ms-content-hint": "TEXT", "x-ms-dynamically-added": true}, "text_1": {"description": "CreatedByEmail", "title": "Text 1", "type": "string", "x-ms-content-hint": "TEXT", "x-ms-dynamically-added": true}, "text_2": {"description": "SelectedTracesJson", "title": "Text 2", "type": "string", "x-ms-content-hint": "TEXT", "x-ms-dynamically-added": true}}, "required": ["text", "text_1", "text_2"]}}}
+## Parse_Selected_Traces [ParseJson] runAfter={}
+   inputs: {"content": "@triggerBody()?['text_2']", "schema": {"type": "array", "items": {"type": "object", "properties": {"TraceItemID": {"type": "number"}, "TraceID": {"type": "string"}, "CaseNumber": {"type": "string"}, "TrackingNumber": {"type": "string"}, "ExceptionSummary": {"type": ["string", "null"]}, "LiveModified": {"type": ["string", "null"]}}, "required": ["TraceItemID", "TraceID", "CaseNumber", "TrackingNumber"]}}}
+## Create_Batch_Header [OpenApiConnection] runAfter={'Parse_Selected_Traces': ['Succeeded']}
+   op: PostItem
+   table = <LIST_BATCH_HEADER>
+   item/field_1 = @triggerBody()?['text']
+   item/field_2/Value = Draft
+   item/field_3 = @triggerBody()?['text_1']
+   item/field_6 = @length(body('Parse_Selected_Traces'))
+   item/field_7 = 0
+   item/field_8 = 0
+   item/field_9 = 0
+   item/field_10 = Created from TRACE Case Communications
+## Create_Batch_Items [Foreach] runAfter={'Create_Batch_Header': ['Succeeded']}
+  ## Create_Batch_Item [OpenApiConnection] runAfter={}
+     op: PostItem
+     table = <LIST_BATCH_ITEMS>
+     item/field_2 = @triggerBody()?['text']
+     item/field_3 = @items('Create_Batch_Items')?['TraceItemID']
+     item/field_5 = @items('Create_Batch_Items')?['CaseNumber']
+     item/field_6 = @items('Create_Batch_Items')?['TrackingNumber']
+     item/field_17 = false
+     item/field_21 = false
+     item/field_25 = @triggerBody()?['text_1']
+     item/field_26 = @utcNow()
+     item/field_36 = false
+     item/field_1 = @concat( 'BTI-', formatDateTime(utcNow(),'yyyyMMddHHmmss'), '-', substring(guid(),0,8) )
+     item/field_4 = @items('Create_Batch_Items')?['TraceID']
+     item/field_7 = @coalesce( items('Create_Batch_Items')?['ExceptionSummary'], '' )
+     item/field_11/Value = Pending Selection
+     item/field_19/Value = Needs Review
+     item/field_22/Value = Draft
+     item/field_27 = @if( empty(items('Create_Batch_Items')?['LiveModified']), null, items('Create_Batch_Items')?['LiveModified'] )
+     item/field_37 = Manual Verification
+## Return_Batch_Creation_Result [Response] runAfter={'Create_Batch_Items': ['Succeeded']}
+   inputs: {"schema": {"type": "object", "properties": {"createdbatchid": {"title": "CreatedBatchID", "type": "string", "x-ms-content-hint": "TEXT", "x-ms-dynamically-added": true}, "createditemcount": {"title": "CreatedItemCount", "type": "number", "x-ms-content-hint": "NUMBER", "x-ms-dynamically-added": true}, "success": {"title": "Success", "type": "boolean", "x-ms-content-hint": "BOOLEAN", "x-ms-dynamically-added": true}}, "additionalProperties": {}}, "statusCode": 200, "body": {"createdbatchid": "@{triggerBody()?['text']}", "createditemcount": "@length(body('Parse_Selected_Traces'))", "success": "@true"}}

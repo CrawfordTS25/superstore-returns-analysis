@@ -1,0 +1,19 @@
+[ROOT]
+    1. Current_Review_RunID  (Compose)
+    2. Current_Review_Decision  (Compose)  runAfter={'Current_Review_RunID': ['Succeeded']}
+    3. Review_Decision_Is_Complete  (If)  runAfter={'Current_Review_Decision': ['Succeeded']}
+
+[ROOT > Review_Decision_Is_Complete [YES]]
+    1. Get_Remaining_Case_Reviews  (OpenApiConnection)
+    2. All_Case_Reviews_Completed  (If)  runAfter={'Get_Remaining_Case_Reviews': ['Succeeded']}
+
+[ROOT > Review_Decision_Is_Complete [YES] > All_Case_Reviews_Completed [YES]]
+    1. Get_Import_Run_Awaiting_Review  (OpenApiConnection)
+    2. Import_Run_Found_  (If)  runAfter={'Get_Import_Run_Awaiting_Review': ['Succeeded']}
+
+[ROOT > Review_Decision_Is_Complete [YES] > All_Case_Reviews_Completed [YES] > Import_Run_Found_ [YES]]
+    1. Current_Import_Run  (Compose)
+    2. Import_Run_Is_Awaiting_Review  (If)  runAfter={'Current_Import_Run': ['Succeeded']}
+
+[ROOT > Review_Decision_Is_Complete [YES] > All_Case_Reviews_Completed [YES] > Import_Run_Found_ [YES] > Import_Run_Is_Awaiting_Review [YES]]
+    1. Release_Import_Run_After_Reviews  (OpenApiConnection)

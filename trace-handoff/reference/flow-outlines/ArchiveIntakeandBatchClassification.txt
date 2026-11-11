@@ -1,0 +1,101 @@
+TRIGGER When_a_file_is_created_(properties_only): {"recurrence": {"frequency": "Minute", "interval": 1}, "evaluatedRecurrence": {"frequency": "Minute", "interval": 1}, "splitOn": "@triggerOutputs()?['body/value']", "type": "OpenApiConnection", "inputs": {"parameters": {"dataset": "https://<tenant>.sharepoint.com/sites/<site>", "table": "<LIBRARY_QV_FILES>", "folderPath": "/QV Automation Files/Incoming"}, "host": {"apiId": "/providers/Microsoft.PowerApps/apis/shared_sharepointonline", "connectionName": "shared_sharepointonline", "operationId": "GetOnNewFileItems"}, "authentication": "@parameters('$authentication')"}, "runtimeConfiguration": {"concurrency": {"runs": 1}}}
+## File_Name [Compose] runAfter={}
+   inputs: @triggerBody()?['{FilenameWithExtension}']
+## Initialize_File_Role [InitializeVariable] runAfter={'File_Name': ['Succeeded']}
+   inputs: {"variables": [{"name": "FileRole", "type": "string", "value": "Unknown"}]}
+## Is_Outbound_File [If] runAfter={'Initialize_File_Role': ['Succeeded']}
+   expression: {"and": [{"equals": ["@startsWith(toLower(outputs('File_Name')), 'outbound_')", true]}]}
+  ## Set_Role_-_Outbound_Statusvariable [SetVariable] runAfter={}
+     inputs: {"name": "FileRole", "value": "Outbound Status"}
+  -- ELSE
+  ## Is_Partition_0 [If] runAfter={}
+     expression: {"and": [{"equals": ["@contains(toLower(outputs('File_Name')), '_0_')", true]}]}
+    ## Set_Role_-_Source_Partition_0 [SetVariable] runAfter={}
+       inputs: {"name": "FileRole", "value": "Source Partition 0"}
+    -- ELSE
+    ## Is_Partition_1 [If] runAfter={}
+       expression: {"and": [{"equals": ["@contains(toLower(outputs('File_Name')), '_1_')", true]}]}
+      ## Set_Role_-_Source_Partition_1 [SetVariable] runAfter={}
+         inputs: {"name": "FileRole", "value": "Source Partition 1"}
+      -- ELSE
+      ## Is_Partition_2 [If] runAfter={}
+         expression: {"and": [{"equals": ["@contains(toLower(outputs('File_Name')), '_2_')\r\n", true]}]}
+        ## Set_Role_-_Source_Partition_2 [SetVariable] runAfter={}
+           inputs: {"name": "FileRole", "value": "Source Partition 2"}
+        -- ELSE
+## Final_File_Classification [Compose] runAfter={'Is_Outbound_File': ['Succeeded']}
+   inputs: @variables('FileRole')
+## Initialize_Processing_Cycle [InitializeVariable] runAfter={'Final_File_Classification': ['Succeeded']}
+   inputs: {"variables": [{"name": "ProcessingCycle", "type": "string", "value": "Unknown"}]}
+## Is_Morning_Upload [If] runAfter={'Initialize_Processing_Cycle': ['Succeeded']}
+   expression: {"and": [{"equals": ["@less(\r\n int(\r\n formatDateTime(\r\n convertTimeZone(\r\n triggerBody()?['Created'],\r\n 'UTC',\r\n 'Central Standard Time'\r\n ),\r\n 'HHmm'\r\n )\r\n ),\r\n 1330\r\n)\r\n", "@true"]}]}
+  ## Set_Cycle_-_Morning [SetVariable] runAfter={}
+     inputs: {"name": "ProcessingCycle", "value": "Morning"}
+  -- ELSE
+  ## Set_Cycle_-_Afternoon [SetVariable] runAfter={}
+     inputs: {"name": "ProcessingCycle", "value": "Afternoon"}
+## Final_Processing_Cycle [Compose] runAfter={'Is_Morning_Upload': ['Succeeded']}
+   inputs: ProcessingCycle
+## Batch_Key [Compose] runAfter={'Final_Processing_Cycle': ['Succeeded']}
+   inputs: @concat( formatDateTime( convertTimeZone( triggerBody()?['Created'], 'UTC', 'Central Standard Time' ), 'yyyyMMdd' ), '-', toUpper(variables('ProcessingCycle')), '-', formatDateTime( convertTimeZone( triggerBody()?['Created'], 'UTC', 'Central Standard Time' ), 'HH' ), substring( formatDateTime( convertTimeZone( triggerBody()?['Created'], 'UTC', 'Central Standard Time' ), 'mm' ), 0, 1 ), '0' )
+## Check_for_Existing_File [OpenApiConnection] runAfter={'Batch_Key': ['Succeeded']}
+   op: GetItems
+   table = <LIST_STAGING>
+   $filter = Title eq '@{outputs('File_Name')}'
+   $top = 1
+## File_Is_New [If] runAfter={'Check_for_Existing_File': ['Succeeded']}
+   expression: {"and": [{"equals": ["@length(body('Check_for_Existing_File')?['value'])\r\n", 0]}]}
+  ## Create_Staging_Record [OpenApiConnection] runAfter={}
+     op: PostItem
+     table = <LIST_STAGING>
+     item/Title = @outputs('File_Name')
+     item/FileName = @outputs('File_Name')
+     item/BatchKey = @outputs('Batch_Key')
+     item/SharePointFileIdentifier = @triggerBody()?['{Identifier}']
+     item/FileReceivedDate = @triggerBody()?['Created']
+     item/FileRole/Value = @variables('FileRole')
+     item/ProcessingCycle/Value = @variables('ProcessingCycle')
+     item/StagingStatus/Value = Waiting for Batch
+  ## Get_Files_in_Batch [OpenApiConnection] runAfter={'Wait_for_Staging_Record': ['Succeeded']}
+     op: GetItems
+     table = <LIST_STAGING>
+     $filter = BatchKey eq '@{outputs('Batch_Key')}'
+     $orderby = Created asc
+     $top = 100
+  ## Find_Outbound_File [Query] runAfter={'Get_Files_in_Batch': ['Succeeded']}
+     inputs: {"from": "@body('Get_Files_in_Batch')?['value']", "where": "@equals(item()?['FileRole']?['Value'], 'Outbound Status')"}
+  ## Find_Partition_0 [Query] runAfter={'Find_Outbound_File': ['Succeeded']}
+     inputs: {"from": "@body('Get_Files_in_Batch')?['value']", "where": "@equals(item()?['FileRole']?['Value'], 'Source Partition 0')\n"}
+  ## Find_Partition_1 [Query] runAfter={'Find_Partition_0': ['Succeeded']}
+     inputs: {"from": "@body('Get_Files_in_Batch')?['value']", "where": "@equals(item()?['FileRole']?['Value'], 'Source Partition 1')"}
+  ## Find_Partition_2 [Query] runAfter={'Find_Partition_1': ['Succeeded']}
+     inputs: {"from": "@body('Get_Files_in_Batch')?['value']", "where": "@equals(item()?['FileRole']?['Value'], 'Source Partition 2')"}
+  ## Required_Batch_Files_Present [If] runAfter={'Find_Partition_2': ['Succeeded']}
+     expression: {"and": [{"equals": ["@and(\r\n greater(length(body('Find_Outbound_File')), 0),\r\n greater(length(body('Find_Partition_0')), 0),\r\n greater(length(body('Find_Partition_1')), 0)\r\n)", "@true"]}]}
+    ## Batch_Ready [Compose] runAfter={}
+       inputs: All required batch files are present. 
+    ## Update_Ready_Batch_Files [Foreach] runAfter={'Batch_Ready': ['Succeeded']}
+      ## Set_Staging_File_Ready [OpenApiConnection] runAfter={}
+         op: PatchItem
+         table = <LIST_STAGING>
+         id = @items('Update_Ready_Batch_Files')?['ID']
+         item/Title = @items('Update_Ready_Batch_Files')?['Title'] 
+         item/FileName = @items('Update_Ready_Batch_Files')?['FileName']
+         item/BatchKey = @items('Update_Ready_Batch_Files')?['BatchKey']
+         item/SharePointFileIdentifier = @items('Update_Ready_Batch_Files')?['SharePointFileIdentifier']
+         item/FileReceivedDate = @items('Update_Ready_Batch_Files')?['FileReceivedDate']
+         item/FileRole/Value = @items('Update_Ready_Batch_Files')?['FileRole']?['Value']
+         item/ProcessingCycle/Value = @items('Update_Ready_Batch_Files')?['ProcessingCycle']?['Value'] 
+         item/StagingStatus/Value = Ready
+         item/RunID = @items('Update_Ready_Batch_Files')?['RunID']
+         item/ProcessedDate = @items('Update_Ready_Batch_Files')?['ProcessedDate']
+         item/ErrorMessage = @items('Update_Ready_Batch_Files')?['ErrorMessage']
+         item/Notes = @items('Update_Ready_Batch_Files')?['Notes']
+    -- ELSE
+    ## Batch_Waiting [Compose] runAfter={}
+       inputs: One or more required batch files are still missing.
+  ## Wait_for_Staging_Record [Wait] runAfter={'Create_Staging_Record': ['Succeeded']}
+     inputs: {"interval": {"count": 10, "unit": "Second"}}
+  -- ELSE
+  ## Duplicate_File_Detected [Compose] runAfter={}
+     inputs: File already exists in QV_File_Batch_Staging. No new staging record was created. 

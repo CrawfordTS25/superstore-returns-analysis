@@ -1,0 +1,518 @@
+TRIGGER When_an_item_is_created_or_modified: {"type": "OpenApiConnection", "inputs": {"parameters": {"dataset": "https://<tenant>.sharepoint.com/sites/<site>", "table": "<LIST_BATCH_HEADER>"}, "host": {"apiId": "/providers/Microsoft.PowerApps/apis/shared_sharepointonline", "operationId": "GetOnUpdatedItems", "connectionName": "shared_sharepointonline"}}, "recurrence": {"frequency": "Minute", "interval": 1}, "conditions": [{"expression": "@and( equals(triggerBody()?['field_2']?['Value'], 'Submitted'), equals(triggerBody()?['ProcessRequested'], true) )"}], "runtimeConfiguration": {"concurrency": {"runs": 1}}, "splitOn": "@triggerOutputs()?['body/value']"}
+## Submitted_Batch_Status [If] runAfter={}
+   expression: {"and": [{"equals": ["@triggerBody()?['field_2']?['Value']", "Submitted"]}]}
+  ## Get_All_Batch_Items [OpenApiConnection] runAfter={'Claim_Batch_for_Processing': ['Succeeded']}
+     op: GetItems
+     table = <LIST_BATCH_ITEMS>
+     $filter = @concat( 'field_2 eq ''', replace( triggerBody()?['field_1'], '''', '''''' ), '''' )
+     $top = 500
+  ## Ready_Item_Count [Compose] runAfter={'Filter_Ready_Items': ['Succeeded']}
+     inputs: @length(body('Filter_Ready_Items')) 
+  ## Ready_Items_Found [If] runAfter={'Ready_Item_Count': ['Succeeded']}
+     expression: {"and": [{"greater": ["@outputs('Ready_Item_Count')", 0]}]}
+    ## Processor_Checkpoint [Compose] runAfter={}
+       inputs: Submitted batch contains Ready items and is eligible for processing.
+    ## Process_Ready_Items [Foreach] runAfter={'Processor_Checkpoint': ['Succeeded']}
+      ## Ready_Item_Payload_Complete [If] runAfter={}
+         expression: {"and": [{"equals": ["@and(\r\n not(empty(string(items('Process_Ready_Items')?['field_3']))),\r\n not(empty(string(items('Process_Ready_Items')?['field_4']))),\r\n not(empty(string(items('Process_Ready_Items')?['field_5']))),\r\n not(empty(string(items('Process_Ready_Items')?['field_6']))),\r\n not(empty(string(items('Process_Ready_Items')?['field_10']))),\r\n not(empty(string(items('Process_Ready_Items')?['field_15']))),\r\n not(empty(string(items('Process_Ready_Items')?['field_16'])))\r\n)", "@true"]}]}
+        ## Validated_Communication_Payload [Compose] runAfter={}
+           inputs: @concat( 'Case: ', string(items('Process_Ready_Items')?['field_5']), ' | Tracking: ', string(items('Process_Ready_Items')?['field_6']), ' | Recipient: ', string(items('Process_Ready_Items')?['field_10']), ' | Subject: ', string(items('Process_Ready_Items')?['field_15']) )
+        ## Get_Live_Trace_Workflow_Eligibility [OpenApiConnection] runAfter={'Validated_Communication_Payload': ['Succeeded']}
+           op: GetItem
+           table = <LIST_TRACE_WORKFLOW>
+           id = @items('Process_Ready_Items')?['field_3']
+        ## Live_Workflow_Eligible_for_Communication [If] runAfter={'Get_Live_Trace_Workflow_Eligibility': ['Succeeded']}
+           expression: {"and": [{"equals": ["@and(\r\n not(\r\n equals(\r\n outputs('Get_Live_Trace_Workflow_Eligibility')?['body/CommunicationLockStatus']?['Value'],\r\n 'Locked'\r\n )\r\n ),\r\n or(\r\n not(\r\n startsWith(\r\n toLower(\r\n string(\r\n items('Process_Ready_Items')?['field_8']\r\n )\r\n ),\r\n 'onetrust'\r\n )\r\n ),\r\n and(\r\n equals(\r\n outputs('Get_Live_Trace_Workflow_Eligibility')?['body/PIIPresent'],\r\n true\r\n ),\r\n equals(\r\n outputs('Get_Live_Trace_Workflow_Eligibility')?['body/OneTrustFormStatus']?['Value'],\r\n 'Required'\r\n )\r\n )\r\n )\r\n)", "@true"]}]}
+          ## Communication_Send_Key [Compose] runAfter={}
+             inputs: @concat( 'COM-', items('Process_Ready_Items')?['field_1'] )
+          ## Get_Existing_Communication_Log [OpenApiConnection] runAfter={'Communication_Send_Key': ['Succeeded']}
+             op: GetItems
+             table = <LIST_COMM_LOG>
+             $filter = field_1 eq '@{outputs('Communication_Send_Key')}'
+             $top = 1
+          ## Communication_Not_Previously_Started [If] runAfter={'Get_Existing_Communication_Log': ['Succeeded']}
+             expression: {"and": [{"equals": ["@length(\r\n body('Get_Existing_Communication_Log')?['value']\r\n)", 0]}]}
+            ## Create_Pending_Communication_Log [OpenApiConnection] runAfter={}
+               op: PostItem
+               table = <LIST_COMM_LOG>
+               item/Title = @concat( 'Pending Email | Case ', string(items('Process_Ready_Items')?['field_5']), ' | ', formatDateTime(utcNow(),'yyyy-MM-dd HH:mm:ss') )
+               item/field_1 = @outputs('Communication_Send_Key')
+               item/field_4 = @items('Process_Ready_Items')?['field_4']
+               item/field_5 = @items('Process_Ready_Items')?['field_5']
+               item/TrackingNumber = @items('Process_Ready_Items')?['field_6']
+               item/field_7 = @items('Process_Ready_Items')?['field_8']
+               item/field_8 = 1.0
+               item/field_9 = @items('Process_Ready_Items')?['field_10']
+               item/field_12 = @items('Process_Ready_Items')?['field_15']
+               item/field_13 = <p class="editor-paragraph">@{items('Process_Ready_Items')?['field_16']}</p>
+               item/field_18 = @items('Process_Ready_Items')?['field_17']
+               item/field_2 = @items('Process_Ready_Items')?['field_2']
+               item/field_3 = @items('Process_Ready_Items')?['field_1']
+               item/field_10/Value = @items('Process_Ready_Items')?['field_11']?['Value']
+               item/field_14/Value = Pending
+               item/field_16 = @items('Process_Ready_Items')?['field_25']
+            ## Lock_Batch_Item_for_Processing [OpenApiConnection] runAfter={'Create_Pending_Communication_Log': ['Succeeded']}
+               op: PatchItem
+               table = <LIST_BATCH_ITEMS>
+               id = @items('Process_Ready_Items')?['ID']
+               item/field_2 = @items('Process_Ready_Items')?['field_2']
+               item/field_3 = @items('Process_Ready_Items')?['field_3']
+               item/field_5 = @items('Process_Ready_Items')?['field_5']
+               item/field_6 = @items('Process_Ready_Items')?['field_6']
+               item/field_17 = @items('Process_Ready_Items')?['field_17']
+               item/field_21 = @items('Process_Ready_Items')?['field_21']
+               item/field_25 = @items('Process_Ready_Items')?['field_25']
+               item/field_26 = @items('Process_Ready_Items')?['field_26']
+               item/field_36 = @items('Process_Ready_Items')?['field_36']
+               item/field_4 = @items('Process_Ready_Items')?['field_4']
+               item/field_10 = @items('Process_Ready_Items')?['field_10']
+               item/field_11/Value = @items('Process_Ready_Items')?['field_11']?['Value']
+               item/field_15 = @items('Process_Ready_Items')?['field_15']
+               item/field_16 = <p class="editor-paragraph">@{items('Process_Ready_Items')?['field_16']}</p>
+               item/field_19/Value = Ready
+               item/field_22/Value = Processing
+               item/field_37 = @items('Process_Ready_Items')?['field_37']
+            ## Send_Prepared_Communication [OpenApiConnection] runAfter={'Lock_Batch_Item_for_Processing': ['Succeeded']}
+               op: SharedMailboxSendEmailV2
+               emailMessage/MailboxAddress = <shared-mailbox@company.com>
+               emailMessage/To = @items('Process_Ready_Items')?['field_10']
+               emailMessage/Subject = @items('Process_Ready_Items')?['field_15']
+               emailMessage/Body = <p class="editor-paragraph">@{items('Process_Ready_Items')?['field_16']}</p>
+               emailMessage/Cc = @items('Process_Ready_Items')?['field_14']
+               emailMessage/Importance = Normal
+            ## Mark_Communication_Log_Sent [OpenApiConnection] runAfter={'Send_Prepared_Communication': ['Succeeded']}
+               op: PatchItem
+               table = <LIST_COMM_LOG>
+               id = @outputs('Create_Pending_Communication_Log')?['body/ID']
+               item/Title = @outputs('Create_Pending_Communication_Log')?['body/Title']
+               item/field_1 = @outputs('Communication_Send_Key')
+               item/field_4 = @items('Process_Ready_Items')?['field_4']
+               item/field_5 = @items('Process_Ready_Items')?['field_5']
+               item/TrackingNumber = @items('Process_Ready_Items')?['field_6']
+               item/field_7 = @items('Process_Ready_Items')?['field_8']
+               item/field_8 = 1.0
+               item/field_9 = @items('Process_Ready_Items')?['field_10']
+               item/field_12 = @items('Process_Ready_Items')?['field_15']
+               item/field_13 = <p class="editor-paragraph">@{items('Process_Ready_Items')?['field_16']}</p>
+               item/field_18 = @items('Process_Ready_Items')?['field_17']
+               item/field_2 = @items('Process_Ready_Items')?['field_2']
+               item/field_3 = @items('Process_Ready_Items')?['field_1']
+               item/field_10/Value = @items('Process_Ready_Items')?['field_11']?['Value']
+               item/field_14/Value = Sent
+               item/field_15 = @utcNow()
+               item/field_16 = @items('Process_Ready_Items')?['field_25']
+            ## Mark_Batch_Item_Sent_-_Safe [OpenApiConnection] runAfter={'Mark_Communication_Log_Sent': ['Succeeded']}
+               op: PatchItem
+               table = <LIST_BATCH_ITEMS>
+               id = @items('Process_Ready_Items')?['ID']
+               item/field_2 = @items('Process_Ready_Items')?['field_2']
+               item/field_3 = @items('Process_Ready_Items')?['field_3']
+               item/field_5 = @items('Process_Ready_Items')?['field_5']
+               item/field_6 = @items('Process_Ready_Items')?['field_6']
+               item/field_17 = @items('Process_Ready_Items')?['field_17']
+               item/field_21 = @items('Process_Ready_Items')?['field_21']
+               item/field_25 = @items('Process_Ready_Items')?['field_25']
+               item/field_26 = @items('Process_Ready_Items')?['field_26']
+               item/field_36 = @items('Process_Ready_Items')?['field_36']
+               item/field_1 = @items('Process_Ready_Items')?['field_1']
+               item/field_11/Value = @items('Process_Ready_Items')?['field_11']?['Value']
+               item/field_19/Value = Ready
+               item/field_22/Value = Sent
+               item/field_23 = @utcNow()
+               item/field_37 = @items('Process_Ready_Items')?['field_37']
+            ## Mark_Batch_Item_Failed_-_Safe [OpenApiConnection] runAfter={'Mark_Communication_Log_Failed': ['Succeeded']}
+               op: PatchItem
+               table = <LIST_BATCH_ITEMS>
+               id = @items('Process_Ready_Items')?['ID']
+               item/field_2 = @items('Process_Ready_Items')?['field_2']
+               item/field_3 = @items('Process_Ready_Items')?['field_3']
+               item/field_5 = @items('Process_Ready_Items')?['field_5']
+               item/field_6 = @items('Process_Ready_Items')?['field_6']
+               item/field_17 = @items('Process_Ready_Items')?['field_17']
+               item/field_21 = @items('Process_Ready_Items')?['field_21']
+               item/field_25 = @items('Process_Ready_Items')?['field_25']
+               item/field_26 = @items('Process_Ready_Items')?['field_26']
+               item/field_36 = @items('Process_Ready_Items')?['field_36']
+               item/field_1 = @items('Process_Ready_Items')?['field_1']
+               item/field_4 = @items('Process_Ready_Items')?['field_4']
+               item/field_7 = @items('Process_Ready_Items')?['field_7']
+               item/field_8 = @items('Process_Ready_Items')?['field_8']
+               item/field_10 = @items('Process_Ready_Items')?['field_10']
+               item/field_11/Value = @items('Process_Ready_Items')?['field_11']?['Value']
+               item/field_15 = @items('Process_Ready_Items')?['field_15']
+               item/field_16 = <p class="editor-paragraph">@{items('Process_Ready_Items')?['field_16']}</p>
+               item/field_19/Value = Ready
+               item/field_22/Value = Failed
+               item/field_24 = Email delivery failed or timed out in the TRACE batch processor. 
+               item/field_27 = @items('Process_Ready_Items')?['field_27']
+               item/field_37 = @items('Process_Ready_Items')?['field_37']
+            ## Create_Claim_Activity [OpenApiConnection] runAfter={'Mark_Batch_Item_Sent_-_Safe': ['Succeeded']}
+               op: PostItem
+               table = <LIST_CLAIM_ACTIVITY>
+               item/field_2 = @items('Process_Ready_Items')?['field_4']
+               item/field_3 = @items('Process_Ready_Items')?['field_5']
+               item/field_4 = @items('Process_Ready_Items')?['field_6']
+               item/ActivityDate = @utcNow()
+               item/field_9 = @items('Process_Ready_Items')?['field_25']
+               item/field_10 = @concat( 'Email sent for tracking number ', string(items('Process_Ready_Items')?['field_6']), ' using template ', string(items('Process_Ready_Items')?['field_8']), '.' )
+               item/Title = @concat( 'Communication Sent | Case ', string(items('Process_Ready_Items')?['field_5']) )
+               item/field_1 = @concat( 'ACT-', items('Process_Ready_Items')?['field_1'] )
+               item/field_5 = @items('Process_Ready_Items')?['field_2']
+               item/field_6 = @items('Process_Ready_Items')?['field_1']
+               item/field_7/Value = Communication Sent
+            ## Mark_Communication_Log_Failed [OpenApiConnection] runAfter={'Send_Prepared_Communication': ['TimedOut', 'Failed']}
+               op: PatchItem
+               table = <LIST_COMM_LOG>
+               id = @outputs('Create_Pending_Communication_Log')?['body/ID']
+               item/Title = @outputs('Create_Pending_Communication_Log')?['body/Title']
+               item/field_1 = @outputs('Communication_Send_Key')
+               item/field_4 = @items('Process_Ready_Items')?['field_4']
+               item/field_5 = @items('Process_Ready_Items')?['field_5']
+               item/TrackingNumber = @items('Process_Ready_Items')?['field_6']
+               item/field_7 = @items('Process_Ready_Items')?['field_8']
+               item/field_8 = 1.0
+               item/field_9 = @items('Process_Ready_Items')?['field_10']
+               item/field_12 = @items('Process_Ready_Items')?['field_15']
+               item/field_13 = <p class="editor-paragraph">@{items('Process_Ready_Items')?['field_16']}</p>
+               item/field_18 = @items('Process_Ready_Items')?['field_17']
+               item/field_2 = @items('Process_Ready_Items')?['field_2']
+               item/field_3 = @items('Process_Ready_Items')?['field_1']
+               item/field_10/Value = @items('Process_Ready_Items')?['field_11']?['Value']
+               item/field_14/Value = Failed
+               item/field_16 = @items('Process_Ready_Items')?['field_25']
+               item/field_17 = Email delivery failed or timed out in the TRACE batch processor. 
+            ## Get_Current_Trace_Workflow [OpenApiConnection] runAfter={'Create_Claim_Activity': ['Succeeded']}
+               op: GetItem
+               table = <LIST_TRACE_WORKFLOW>
+               id = @items('Process_Ready_Items')?['field_3']
+            ## Update_Trace_Workflow_After_Communication [OpenApiConnection] runAfter={'Get_Current_Trace_Workflow': ['Succeeded']}
+               op: PatchItem
+               table = <LIST_TRACE_WORKFLOW>
+               id = @items('Process_Ready_Items')?['field_3']
+               item/TraceID = @outputs('Get_Current_Trace_Workflow')?['body/TraceID']
+               item/TrackingNumber = @outputs('Get_Current_Trace_Workflow')?['body/TrackingNumber']
+               item/CaseNumber = @outputs('Get_Current_Trace_Workflow')?['body/CaseNumber']
+               item/PIIPresent = @outputs('Get_Current_Trace_Workflow')?['body/PIIPresent']
+               item/ClaimRequired = @outputs('Get_Current_Trace_Workflow')?['body/ClaimRequired']
+               item/RecipientOverride = @outputs('Get_Current_Trace_Workflow')?['body/RecipientOverride']
+               item/ContactAttemptCount = @add( int( coalesce( outputs('Get_Current_Trace_Workflow')?['body/ContactAttemptCount'], 0 ) ), 1 )
+               item/CaseRiskType/Value = @outputs('Get_Current_Trace_Workflow')?['body/CaseRiskType']?['Value']
+               item/TraceWorkflowStatus/Value = @outputs('Get_Current_Trace_Workflow')?['body/TraceWorkflowStatus/Value']
+               item/Priority/Value = @outputs('Get_Current_Trace_Workflow')?['body/Priority/Value']
+               item/LastAction = @concat( 'Outbound email sent successfully using template ', string(items('Process_Ready_Items')?['field_8']), '.' )
+               item/NextAction/Value = @outputs('Get_Current_Trace_Workflow')?['body/NextAction/Value']
+               item/PIIReviewStatus/Value = @outputs('Get_Current_Trace_Workflow')?['body/PIIReviewStatus/Value']
+               item/OneTrustFormStatus/Value = @outputs('Get_Current_Trace_Workflow')?['body/OneTrustFormStatus/Value']
+               item/EmailEligible = @outputs('Get_Current_Trace_Workflow')?['body/EmailEligible']
+               item/ClaimWorkflowStatus/Value = @outputs('Get_Current_Trace_Workflow')?['body/ClaimWorkflowStatus/Value']
+               item/ContactSource/Value = @outputs('Get_Current_Trace_Workflow')?['body/ContactSource/Value']
+               item/ResponseStatus/Value = @if( equals( items('Process_Ready_Items')?['field_17'], true ), 'Awaiting Response', 'No Response Needed' )
+               item/CarrierResolutionType/Value = @outputs('Get_Current_Trace_Workflow')?['body/CarrierResolutionType/Value']
+               item/LastCommunicationDate = @utcNow()
+               item/LastCommunicationType = @items('Process_Ready_Items')?['field_8'] 
+               item/LastContactedBy/Claims = @concat( 'i:0#.f|membership|', items('Process_Ready_Items')?['field_25'] )
+               item/ActiveTicklerStatus/Value = @outputs('Get_Current_Trace_Workflow')?['body/ActiveTicklerStatus']?['Value']
+               item/LastBatchItemID = @items('Process_Ready_Items')?['field_1']
+               item/CommunicationLockStatus/Value = None
+            -- ELSE
+            ## Existing_Communication_Log_Is_Sent [If] runAfter={}
+               expression: {"and": [{"equals": ["@first(\r\n body('Get_Existing_Communication_Log')?['value']\r\n)?['field_14']?['Value']", "Sent"]}]}
+              ## Duplicate_Send_Blocked [Compose] runAfter={}
+                 inputs: @concat( 'Duplicate send blocked for Batch Item ', items('Process_Ready_Items')?['field_1'], '. Communication ID ', outputs('Communication_Send_Key'), ' already exists.' )
+              ## Reconcile_Previously_Sent_Batch_Item [OpenApiConnection] runAfter={'Duplicate_Send_Blocked': ['SUCCEEDED']}
+                 op: PatchItem
+                 table = <LIST_BATCH_ITEMS>
+                 id = @items('Process_Ready_Items')?['ID']
+                 item/field_2 = @items('Process_Ready_Items')?['field_2']
+                 item/field_3 = @items('Process_Ready_Items')?['field_3']
+                 item/field_5 = @items('Process_Ready_Items')?['field_5']
+                 item/field_6 = @items('Process_Ready_Items')?['field_6']
+                 item/field_17 = @items('Process_Ready_Items')?['field_17']
+                 item/field_21 = true
+                 item/field_25 = @items('Process_Ready_Items')?['field_25']
+                 item/field_26 = @items('Process_Ready_Items')?['field_26']
+                 item/field_36 = false
+                 item/field_1 = @items('Process_Ready_Items')?['field_1']
+                 item/field_4 = @items('Process_Ready_Items')?['field_4'] 
+                 item/field_10 = @items('Process_Ready_Items')?['field_10']
+                 item/field_11/Value = @items('Process_Ready_Items')?['field_11']?['Value']
+                 item/field_15 = @items('Process_Ready_Items')?['field_15'] 
+                 item/field_16 = <p class="editor-paragraph">@{items('Process_Ready_Items')?['field_16']}</p>
+                 item/field_19/Value = Ready
+                 item/field_20 = Previously sent communication found. Duplicate send was blocked and the batch item was reconciled to Sent.
+                 item/field_22/Value = Sent
+                 item/field_23 = @first( body('Get_Existing_Communication_Log')?['value'] )?['field_15']
+                 item/field_37 = Manual Verification
+                 item/AddressCorrectionSource/Value = Branch Reply
+                 item/AddressCorrectionNotes = <p class="editor-paragraph">@{items('Process_Ready_Items')?['field_37']}</p>
+                 item/AddressCorrectionReviewed = @items('Process_Ready_Items')?['field_36']
+                 item/OriginalShippingLocationType/Value = Branch
+              -- ELSE
+              ## Existing_Communication_Requires_Recovery [Compose] runAfter={}
+                 inputs: @concat( 'Existing communication log requires recovery. Log ID: ', string( first( body('Get_Existing_Communication_Log')?['value'] )?['ID'] ), ' | Status: ', string( first( body('Get_Existing_Communication_Log')?['value'] )?['field_14']?['Value'] ), ' | Batch Item: ', string( items('Process_Ready_Items')?['field_1'] ) )
+              ## Existing_Communication_Log_Is_Failed [If] runAfter={'Existing_Communication_Requires_Recovery': ['Succeeded']}
+                 expression: {"and": [{"equals": ["@first(\r\n body('Get_Existing_Communication_Log')?['value']\r\n)?['field_14']?['Value']", "Failed"]}]}
+                ## Reset_Failed_Communication_Log_to_Pending [OpenApiConnection] runAfter={}
+                   op: PatchItem
+                   table = <LIST_COMM_LOG>
+                   id = @first( body('Get_Existing_Communication_Log')?['value'] )?['ID']
+                   item/Title = @first( body('Get_Existing_Communication_Log')?['value'] )?['Title']
+                   item/field_1 = @outputs('Communication_Send_Key')
+                   item/field_4 = @items('Process_Ready_Items')?['field_4']
+                   item/field_5 = @items('Process_Ready_Items')?['field_5']
+                   item/TrackingNumber = @items('Process_Ready_Items')?['field_6']
+                   item/field_7 = @items('Process_Ready_Items')?['field_8']
+                   item/field_8 = 1.0
+                   item/field_9 = @items('Process_Ready_Items')?['field_10']
+                   item/field_12 = @items('Process_Ready_Items')?['field_15']
+                   item/field_13 = <p class="editor-paragraph">@{items('Process_Ready_Items')?['field_16']}</p>
+                   item/field_18 = @items('Process_Ready_Items')?['field_17']
+                   item/field_2 = @items('Process_Ready_Items')?['field_2']
+                   item/field_3 = @items('Process_Ready_Items')?['field_1']
+                   item/field_10/Value = @items('Process_Ready_Items')?['field_11']?['Value']
+                   item/field_14/Value = Pending
+                   item/field_15 = @null
+                   item/field_16 = @items('Process_Ready_Items')?['field_25']
+                   item/field_17 = @null
+                ## Retry_Failed_Communication [OpenApiConnection] runAfter={'Reset_Failed_Communication_Log_to_Pending': ['Succeeded']}
+                   op: SharedMailboxSendEmailV2
+                   emailMessage/MailboxAddress = <shared-mailbox@company.com>
+                   emailMessage/To = @items('Process_Ready_Items')?['field_10']
+                   emailMessage/Subject = @items('Process_Ready_Items')?['field_15']
+                   emailMessage/Body = <p class="editor-paragraph">@{items('Process_Ready_Items')?['field_16'] }</p>
+                   emailMessage/Cc = @items('Process_Ready_Items')?['field_14']
+                   emailMessage/Importance = Normal
+                ## Mark_Retried_Communication_Log_Sent [OpenApiConnection] runAfter={'Retry_Failed_Communication': ['Succeeded']}
+                   op: PatchItem
+                   table = <LIST_COMM_LOG>
+                   id = @first( body('Get_Existing_Communication_Log')?['value'] )?['ID']
+                   item/Title = @first( body('Get_Existing_Communication_Log')?['value'] )?['Title']
+                   item/field_1 = @outputs('Communication_Send_Key')
+                   item/field_4 = @items('Process_Ready_Items')?['field_4']
+                   item/field_5 = @items('Process_Ready_Items')?['field_5']
+                   item/TrackingNumber = @items('Process_Ready_Items')?['field_6']
+                   item/field_7 = @items('Process_Ready_Items')?['field_8']
+                   item/field_8 = 1.0
+                   item/field_9 = @items('Process_Ready_Items')?['field_10']
+                   item/field_12 = @items('Process_Ready_Items')?['field_15']
+                   item/field_13 = <p class="editor-paragraph">@{items('Process_Ready_Items')?['field_16']}</p>
+                   item/field_18 = @items('Process_Ready_Items')?['field_17']
+                   item/field_2 = @items('Process_Ready_Items')?['field_2']
+                   item/field_3 = @items('Process_Ready_Items')?['field_1']
+                   item/field_10/Value = @items('Process_Ready_Items')?['field_11']?['Value']
+                   item/field_14/Value = Sent
+                   item/field_15 = @utcNow()
+                   item/field_16 = @items('Process_Ready_Items')?['field_25']
+                   item/field_17 = @null
+                ## Mark_Retried_Batch_Item_Sent [OpenApiConnection] runAfter={'Mark_Retried_Communication_Log_Sent': ['Succeeded']}
+                   op: PatchItem
+                   table = <LIST_BATCH_ITEMS>
+                   id = @items('Process_Ready_Items')?['ID']
+                   item/field_2 = @items('Process_Ready_Items')?['field_2']
+                   item/field_3 = @items('Process_Ready_Items')?['field_3']
+                   item/field_5 = @items('Process_Ready_Items')?['field_5']
+                   item/field_6 = @items('Process_Ready_Items')?['field_6']
+                   item/field_17 = @items('Process_Ready_Items')?['field_17']
+                   item/field_21 = true
+                   item/field_25 = @items('Process_Ready_Items')?['field_25']
+                   item/field_26 = @items('Process_Ready_Items')?['field_26']
+                   item/field_36 = false
+                   item/field_1 = @items('Process_Ready_Items')?['field_1']
+                   item/field_4 = @items('Process_Ready_Items')?['field_4']
+                   item/field_10 = @items('Process_Ready_Items')?['field_10']
+                   item/field_11/Value = @items('Process_Ready_Items')?['field_11']?['Value']
+                   item/field_15 = @items('Process_Ready_Items')?['field_15']
+                   item/field_16 = <p class="editor-paragraph">@{items('Process_Ready_Items')?['field_16']}</p>
+                   item/field_19/Value = Ready
+                   item/field_20 = Communication sent successfully after a controlled retry.
+                   item/field_22/Value = Sent
+                   item/field_23 = @utcNow()
+                   item/field_24 = @null
+                   item/field_37 = Manual Verification
+                   item/AddressCorrectionSource/Value = Branch Reply
+                   item/AddressCorrectionNotes = <p class="editor-paragraph">@{items('Process_Ready_Items')?['field_37']}</p>
+                   item/AddressCorrectionReviewed = @items('Process_Ready_Items')?['field_36']
+                   item/OriginalShippingLocationType/Value = Branch
+                ## Mark_Retried_Communication_Log_Failed [OpenApiConnection] runAfter={'Retry_Failed_Communication': ['Failed', 'TimedOut']}
+                   op: PatchItem
+                   table = <LIST_COMM_LOG>
+                   id = @first( body('Get_Existing_Communication_Log')?['value'] )?['ID']
+                   item/Title = @first( body('Get_Existing_Communication_Log')?['value'] )?['Title']
+                   item/field_1 = @outputs('Communication_Send_Key')
+                   item/field_4 = @items('Process_Ready_Items')?['field_4']
+                   item/field_5 = @items('Process_Ready_Items')?['field_5']
+                   item/TrackingNumber = @items('Process_Ready_Items')?['field_6']
+                   item/field_7 = @items('Process_Ready_Items')?['field_8']
+                   item/field_8 = 1.0
+                   item/field_9 = @items('Process_Ready_Items')?['field_10']
+                   item/field_12 = @items('Process_Ready_Items')?['field_15']
+                   item/field_13 = <p class="editor-paragraph">@{items('Process_Ready_Items')?['field_16']}</p>
+                   item/field_18 = @items('Process_Ready_Items')?['field_17']
+                   item/field_2 = @items('Process_Ready_Items')?['field_2']
+                   item/field_3 = @items('Process_Ready_Items')?['field_1']
+                   item/field_14/Value = Failed
+                   item/field_15 = @null
+                   item/field_16 = @items('Process_Ready_Items')?['field_25']
+                   item/field_17 = Controlled retry failed or timed out in the TRACE batch processor.
+                ## Mark_Retried_Batch_Item_Failed [OpenApiConnection] runAfter={'Mark_Retried_Communication_Log_Failed': ['Succeeded']}
+                   op: PatchItem
+                   table = <LIST_BATCH_ITEMS>
+                   id = @items('Process_Ready_Items')?['ID']
+                   item/field_2 = @items('Process_Ready_Items')?['field_2']
+                   item/field_3 = @items('Process_Ready_Items')?['field_3']
+                   item/field_5 = @items('Process_Ready_Items')?['field_5']
+                   item/field_6 = @items('Process_Ready_Items')?['field_6']
+                   item/field_17 = @items('Process_Ready_Items')?['field_17']
+                   item/field_21 = true
+                   item/field_25 = @items('Process_Ready_Items')?['field_25']
+                   item/field_26 = @items('Process_Ready_Items')?['field_26']
+                   item/field_36 = false
+                   item/field_1 = @items('Process_Ready_Items')?['field_1']
+                   item/field_4 = @items('Process_Ready_Items')?['field_4']
+                   item/field_10 = @items('Process_Ready_Items')?['field_10']
+                   item/field_11/Value = @items('Process_Ready_Items')?['field_11']?['Value']
+                   item/field_15 = @items('Process_Ready_Items')?['field_15']
+                   item/field_16 = <p class="editor-paragraph">@{items('Process_Ready_Items')?['field_16']}</p>
+                   item/field_19/Value = Ready
+                   item/field_20 = The communication remains ready, but the controlled retry failed. Correct the recipient or connection issue before retrying again.
+                   item/field_22/Value = Failed
+                   item/field_23 = @null
+                   item/field_24 = Controlled retry failed or timed out in the TRACE batch processor.
+                   item/field_37 = Manual Verification
+                   item/AddressCorrectionSource/Value = Branch Reply
+                   item/AddressCorrectionNotes = <p class="editor-paragraph">@{items('Process_Ready_Items')?['field_37']}</p>
+                   item/AddressCorrectionReviewed = @items('Process_Ready_Items')?['field_36']
+                   item/OriginalShippingLocationType/Value = Branch
+                -- ELSE
+                ## Pending_Communication_Held [Compose] runAfter={}
+                   inputs: @concat( 'Communication retry held because an existing Pending log was found. ', 'Log ID: ', string( first( body('Get_Existing_Communication_Log')?['value'] )?['ID'] ), ' | Batch Item: ', string( items('Process_Ready_Items')?['field_1'] ), ' | Status: ', string( first( body('Get_Existing_Communication_Log')?['value'] )?['field_14']?['Value'] ) )
+                ## Hold_Batch_Item_for_Pending_Communication [OpenApiConnection] runAfter={'Pending_Communication_Held': ['Succeeded']}
+                   op: PatchItem
+                   table = <LIST_BATCH_ITEMS>
+                   id = @items('Process_Ready_Items')?['ID']
+                   item/field_2 = @items('Process_Ready_Items')?['field_2']
+                   item/field_3 = @items('Process_Ready_Items')?['field_3']
+                   item/field_5 = @items('Process_Ready_Items')?['field_5']
+                   item/field_6 = @items('Process_Ready_Items')?['field_6']
+                   item/field_17 = @items('Process_Ready_Items')?['field_17']
+                   item/field_21 = true
+                   item/field_25 = @items('Process_Ready_Items')?['field_25']
+                   item/field_26 = @items('Process_Ready_Items')?['field_26']
+                   item/field_36 = false
+                   item/field_1 = @items('Process_Ready_Items')?['field_1']
+                   item/field_4 = @items('Process_Ready_Items')?['field_4']
+                   item/field_10 = @items('Process_Ready_Items')?['field_10']
+                   item/field_11/Value = @items('Process_Ready_Items')?['field_11']?['Value']
+                   item/field_15 = @items('Process_Ready_Items')?['field_15']
+                   item/field_16 = <p class="editor-paragraph">@{items('Process_Ready_Items')?['field_16']}</p>
+                   item/field_19/Value = Ready
+                   item/field_20 = No additional email was attempted. Confirm the prior communication status before resubmitting.
+                   item/field_22/Value = Skipped
+                   item/field_23 = @null
+                   item/field_24 = Communication held because an existing Pending communication log requires investigation
+                   item/field_37 = Manual Verification
+                   item/AddressCorrectionSource/Value = Branch Reply
+                   item/AddressCorrectionNotes = <p class="editor-paragraph">@{items('Process_Ready_Items')?['field_37']}</p>
+                   item/AddressCorrectionReviewed = @items('Process_Ready_Items')?['field_36']
+                   item/OriginalShippingLocationType/Value = Branch
+          -- ELSE
+          ## Communication_Eligibility_Blocked [Compose] runAfter={}
+             inputs: @concat( 'Communication blocked by live workflow eligibility. ', 'Batch Item: ', string(items('Process_Ready_Items')?['field_1']), ' | Case: ', string(items('Process_Ready_Items')?['field_5']), ' | Template: ', string(items('Process_Ready_Items')?['field_8']), ' | Email Eligible: ', string( outputs('Get_Live_Trace_Workflow_Eligibility')?['body/EmailEligible'] ), ' | PII Present: ', string( outputs('Get_Live_Trace_Workflow_Eligibility')?['body/PIIPresent'] ), ' | OneTrust Status: ', string( outputs('Get_Live_Trace_Workflow_Eligibility')?['body/OneTrustFormStatus']?['Value'] ) )
+          ## Mark_Ineligible_Batch_Item_Failed [OpenApiConnection] runAfter={'Communication_Eligibility_Blocked': ['Succeeded']}
+             op: PatchItem
+             table = <LIST_BATCH_ITEMS>
+             id = @items('Process_Ready_Items')?['ID']
+             item/field_2 = @items('Process_Ready_Items')?['field_2']
+             item/field_3 = @items('Process_Ready_Items')?['field_3']
+             item/field_5 = @items('Process_Ready_Items')?['field_5']
+             item/field_6 = @items('Process_Ready_Items')?['field_6']
+             item/field_17 = @items('Process_Ready_Items')?['field_17']
+             item/field_21 = @items('Process_Ready_Items')?['field_21']
+             item/field_25 = @items('Process_Ready_Items')?['field_25']
+             item/field_26 = @items('Process_Ready_Items')?['field_26']
+             item/field_36 = @items('Process_Ready_Items')?['field_36']
+             item/field_1 = @items('Process_Ready_Items')?['field_1']
+             item/field_4 = @items('Process_Ready_Items')?['field_4']
+             item/field_7 = @items('Process_Ready_Items')?['field_7']
+             item/field_8 = @items('Process_Ready_Items')?['field_8'] 
+             item/field_10 = @items('Process_Ready_Items')?['field_10']
+             item/field_11/Value = @items('Process_Ready_Items')?['field_11']?['Value']
+             item/field_15 = @items('Process_Ready_Items')?['field_15']
+             item/field_16 = <p class="editor-paragraph">@{items('Process_Ready_Items')?['field_16']}</p>
+             item/field_19/Value = Ready
+             item/field_22/Value = Failed
+             item/field_24 = Communication blocked because the live Trace Workflow record was not eligible for the selected template.
+             item/field_27 = @items('Process_Ready_Items')?['field_27']
+             item/field_37 = @items('Process_Ready_Items')?['field_37']
+        -- ELSE
+        ## Blocked_Communication_Payload [Compose] runAfter={}
+           inputs: @concat( 'Ready item is missing required send data. Batch Item ID: ', string(items('Process_Ready_Items')?['ID']), ' | Case: ', string(items('Process_Ready_Items')?['field_5']) )
+    -- ELSE
+    ## No_Queued_Items_to_Process [Compose] runAfter={}
+       inputs: No queued communication items were found. Continue to batch reconciliation.
+  ## Filter_Current_Batch [Query] runAfter={'Get_All_Batch_Items': ['Succeeded']}
+     inputs: {"from": "@outputs('Get_All_Batch_Items')?['body/value']", "where": "@equals(\n item()?['field_2'],\n triggerBody()?['field_1']\n)"}
+  ## Filter_Ready_Items [Query] runAfter={'Filter_Current_Batch': ['Succeeded']}
+     inputs: {"from": "@body('Filter_Current_Batch')", "where": "@and(\n equals(item()?['field_19']?['Value'], 'Ready'),\n equals(item()?['field_22']?['Value'], 'Queued'),\n equals(item()?['field_21'], true)\n)"}
+  ## Claim_Batch_for_Processing [OpenApiConnection] runAfter={}
+     op: PatchItem
+     table = <LIST_BATCH_HEADER>
+     id = @triggerBody()?['ID']
+     item/field_1 = @triggerBody()?['field_1']
+     item/field_2/Value = Processing
+     item/field_3 = @triggerBody()?['field_3']
+     item/field_4 = @triggerBody()?['field_4']
+     item/field_5 = @triggerBody()?['field_5']
+     item/field_6 = @triggerBody()?['field_6']
+     item/field_7 = @triggerBody()?['field_7']
+     item/field_8 = @triggerBody()?['field_8']
+     item/field_9 = @triggerBody()?['field_9']
+     item/field_10 = @triggerBody()?['field_10']
+     item/ProcessRequested = false
+     item/ProcessingStartedDate = @utcNow()
+  ## Get_Batch_Items_for_Reconciliation [OpenApiConnection] runAfter={'Ready_Items_Found': ['Succeeded', 'Failed', 'TimedOut']}
+     op: GetItems
+     table = <LIST_BATCH_ITEMS>
+     $filter = @concat( 'field_2 eq ''', replace( triggerBody()?['field_1'], '''', '''''' ), '''' )
+     $top = 500
+  ## Filter_Reconciliation_Batch [Query] runAfter={'Get_Batch_Items_for_Reconciliation': ['Succeeded']}
+     inputs: {"from": "@body('Get_Batch_Items_for_Reconciliation')?['value']", "where": "@equals(\n item()?['field_2'],\n triggerBody()?['field_1']\n)"}
+  ## Filter_Sent_Items [Query] runAfter={'Filter_Reconciliation_Batch': ['Succeeded']}
+     inputs: {"from": "@body('Filter_Reconciliation_Batch')", "where": "@equals(\n item()?['field_22']?['Value'],\n 'Sent'\n)"}
+  ## Filter_Failed_Items [Query] runAfter={'Filter_Sent_Items': ['Succeeded']}
+     inputs: {"from": "@body('Filter_Reconciliation_Batch')", "where": "@equals(\n item()?['field_22']?['Value'],\n 'Failed'\n)"}
+  ## Filter_Open_Items [Query] runAfter={'Filter_Skipped_Items': ['Succeeded']}
+     inputs: {"from": "@body('Filter_Reconciliation_Batch')", "where": "@or(\n equals(item()?['field_22']?['Value'], 'Draft'),\n equals(item()?['field_22']?['Value'], 'Queued'),\n equals(item()?['field_22']?['Value'], 'Processing')\n)"}
+  ## Reconciliation_Total_Count [Compose] runAfter={'Filter_Open_Items': ['Succeeded']}
+     inputs: @length( body('Filter_Reconciliation_Batch') )
+  ## Reconciliation_Sent_Count [Compose] runAfter={'Reconciliation_Total_Count': ['Succeeded']}
+     inputs: @length( body('Filter_Sent_Items') )
+  ## Reconciliation_Failed_Count [Compose] runAfter={'Reconciliation_Sent_Count': ['Succeeded']}
+     inputs: @length( body('Filter_Failed_Items') )
+  ## Reconciliation_Open_Count [Compose] runAfter={'Reconciliation_Skipped_Count': ['Succeeded']}
+     inputs: @length( body('Filter_Open_Items') )
+  ## Final_Batch_Status [Compose] runAfter={'Reconciliation_Open_Count': ['Succeeded']}
+     inputs: @if( equals( outputs('Reconciliation_Sent_Count'), outputs('Reconciliation_Total_Count') ), 'Sent', if( greater( outputs('Reconciliation_Failed_Count'), 0 ), if( greater( outputs('Reconciliation_Sent_Count'), 0 ), 'Partially Sent', 'Failed' ), if( greater( outputs('Reconciliation_Skipped_Count'), 0 ), if( greater( outputs('Reconciliation_Sent_Count'), 0 ), 'Partially Sent', 'Failed' ), 'Processing' ) ) )
+  ## Reconcile_Batch_Header [OpenApiConnection] runAfter={'Final_Batch_Status': ['Succeeded']}
+     op: PatchItem
+     table = <LIST_BATCH_HEADER>
+     id = @triggerBody()?['ID']
+     item/field_1 = @triggerBody()?['field_1']
+     item/field_2/Value = @outputs('Final_Batch_Status')
+     item/field_3 = @triggerBody()?['field_3']
+     item/field_4 = @triggerBody()?['field_4']
+     item/field_5 = @triggerBody()?['field_5']
+     item/field_6 = @outputs('Reconciliation_Total_Count')
+     item/field_7 = @outputs('Reconciliation_Open_Count')
+     item/field_8 = @outputs('Reconciliation_Sent_Count')
+     item/field_9 = @add( outputs('Reconciliation_Failed_Count'), outputs('Reconciliation_Skipped_Count') )
+     item/field_10 = @triggerBody()?['field_10']
+     item/ProcessRequested = false
+     item/ProcessingStartedDate = @utcNow()
+  ## Filter_Skipped_Items [Query] runAfter={'Filter_Failed_Items': ['Succeeded']}
+     inputs: {"from": "@body('Filter_Reconciliation_Batch')", "where": "@equals(\n item()?['field_22']?['Value'],\n 'Skipped'\n)"}
+  ## Reconciliation_Skipped_Count [Compose] runAfter={'Reconciliation_Failed_Count': ['Succeeded']}
+     inputs: @length( body('Filter_Skipped_Items') ) 
+  -- ELSE
+  ## Terminate [Terminate] runAfter={}
+     inputs: {"runStatus": "Succeeded"}

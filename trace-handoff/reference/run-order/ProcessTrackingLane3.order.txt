@@ -1,0 +1,103 @@
+[ROOT]
+    1. Initialize_Chunks_Processed_This_Activation  (InitializeVariable)
+    2. Initialize_No_Lane_Work_Remaining  (InitializeVariable)  runAfter={'Initialize_Chunks_Processed_This_Activation': ['Succeeded']}
+    3. Initialize_Maximum_Chunks_This_Activation  (InitializeVariable)  runAfter={'Initialize_No_Lane_Work_Remaining': ['Succeeded']}
+    4. Initialize_Lane_Fatal_Error  (InitializeVariable)  runAfter={'Initialize_Maximum_Chunks_This_Activation': ['Succeeded']}
+    5. Initialize_Lane_Fatal_Error_Message  (InitializeVariable)  runAfter={'Initialize_Lane_Fatal_Error': ['Succeeded']}
+    6. Process_Lane_Until_Empty_or_Limit_Reached  (Until)  runAfter={'Initialize_Lane_Fatal_Error_Message': ['Succeeded']}
+    7. Lane_Activation_Failed  (If)  runAfter={'Process_Lane_Until_Empty_or_Limit_Reached': ['Succeeded']}
+
+[ROOT > Process_Lane_Until_Empty_or_Limit_Reached]
+    1. Get_Pending_Chunk_Source  (OpenApiConnection)
+    2. Pending_Chunk_Found  (If)  runAfter={'Get_Pending_Chunk_Source': ['Succeeded']}
+
+[ROOT > Process_Lane_Until_Empty_or_Limit_Reached > Pending_Chunk_Found [YES]]
+    1. Get_Triggered_Chunk_Record  (OpenApiConnection)
+    2. Chunk_Is_Pending  (If)  runAfter={'Get_Triggered_Chunk_Record': ['Succeeded']}
+
+[ROOT > Process_Lane_Until_Empty_or_Limit_Reached > Pending_Chunk_Found [YES] > Chunk_Is_Pending [YES]]
+    1. Generate_Worker_Run_ID  (Compose)
+    2. Current_Claim_Token  (Compose)  runAfter={'Generate_Worker_Run_ID': ['Succeeded']}
+    3. Claim_Tracking_Chunk  (OpenApiConnection)  runAfter={'Current_Claim_Token': ['Succeeded']}
+    4. Current_Chunk_Records  (Compose)  runAfter={'Claim_Tracking_Chunk': ['Succeeded']}
+    5. Current_Chunk_Record_Count  (Compose)  runAfter={'Current_Chunk_Records': ['Succeeded']}
+    6. Chunk_Payload_Balanced  (If)  runAfter={'Current_Chunk_Record_Count': ['Succeeded']}
+
+[ROOT > Process_Lane_Until_Empty_or_Limit_Reached > Pending_Chunk_Found [YES] > Chunk_Is_Pending [YES] > Chunk_Payload_Balanced [YES]]
+    1. Current_Chunk_Tracking_Numbers  (Select)
+    2. Get_Active_Exception_Routing_Rules  (OpenApiConnection)  runAfter={'Current_Chunk_Tracking_Numbers': ['Succeeded']}
+    3. Process_Current_Chunk_Records  (Foreach)  runAfter={'Get_Active_Exception_Routing_Rules': ['Succeeded']}
+    4. Wait_for_Processing_Results_to_Settle  (Wait)  runAfter={'Process_Current_Chunk_Records': ['Succeeded']}
+    5. Get_Current_Chunk_Processing_Results  (OpenApiConnection)  runAfter={'Wait_for_Processing_Results_to_Settle': ['Succeeded']}
+    6. Filter_Current_Chunk_Results  (Query)  runAfter={'Get_Current_Chunk_Processing_Results': ['Succeeded']}
+    7. Current_Chunk_Completed_Count  (Compose)  runAfter={'Filter_Current_Chunk_Results': ['Succeeded']}
+    8. Filter_Current_Chunk_Error_Results  (Query)  runAfter={'Current_Chunk_Completed_Count': ['Succeeded']}
+    9. Current_Chunk_Error_Count  (Compose)  runAfter={'Filter_Current_Chunk_Error_Results': ['Succeeded']}
+   10. Chunk_Results_Balanced  (If)  runAfter={'Current_Chunk_Error_Count': ['Succeeded']}
+   11. Fail_Tracking_Chunk_After_Worker_Error  (OpenApiConnection)  runAfter={'Chunk_Results_Balanced': ['TimedOut', 'Failed', 'Skipped']}
+   12. Set_Worker_Chunk_Failed_Error_Message_  (SetVariable)  runAfter={'Fail_Tracking_Chunk_After_Worker_Error': ['Succeeded']}
+   13. Set_Worker_Chunk_Failed_Error  (SetVariable)  runAfter={'Set_Worker_Chunk_Failed_Error_Message_': ['Succeeded']}
+
+[ROOT > Process_Lane_Until_Empty_or_Limit_Reached > Pending_Chunk_Found [YES] > Chunk_Is_Pending [YES] > Chunk_Payload_Balanced [YES] > Process_Current_Chunk_Records]
+    1. Current_Result_Key  (Compose)
+    2. Find_Existing_Chunk_Result  (OpenApiConnection)  runAfter={'Current_Result_Key': ['Succeeded']}
+    3. Chunk_Result_Does_Not_Exist  (If)  runAfter={'Find_Existing_Chunk_Result': ['Succeeded']}
+
+[ROOT > Process_Lane_Until_Empty_or_Limit_Reached > Pending_Chunk_Found [YES] > Chunk_Is_Pending [YES] > Chunk_Payload_Balanced [YES] > Process_Current_Chunk_Records > Chunk_Result_Does_Not_Exist [YES]]
+    1. Current_Shipper_Location_Key  (Compose)
+    2. Current_Operational_Location  (Compose)  runAfter={'Current_Shipper_Location_Key': ['Succeeded']}
+    3. Current_Return_Outreach_Destination  (Compose)  runAfter={'Current_Operational_Location': ['Succeeded']}
+    4. Current_Address_Issue_Is_Resolved  (Compose)  runAfter={'Current_Return_Outreach_Destination': ['Succeeded']}
+    5. Current_Has_Unresolved_Address_Issue  (Compose)  runAfter={'Current_Address_Issue_Is_Resolved': ['Succeeded']}
+    6. Current_Has_Return_Condition  (Compose)  runAfter={'Current_Has_Unresolved_Address_Issue': ['Succeeded']}
+    7. Current_Has_Weather_Emergency  (Compose)  runAfter={'Current_Has_Return_Condition': ['Succeeded']}
+    8. Current_Has_Timing_Carrier_Delay  (Compose)  runAfter={'Current_Has_Weather_Emergency': ['Succeeded']}
+    9. Current_Has_Exception_Information  (Compose)  runAfter={'Current_Has_Timing_Carrier_Delay': ['Succeeded']}
+   10. Current_Default_Outcome  (Compose)  runAfter={'Current_Has_Exception_Information': ['Succeeded']}
+   11. Current_Default_Review_Decision  (Compose)  runAfter={'Current_Default_Outcome': ['Succeeded']}
+   12. Current_Default_Reason  (Compose)  runAfter={'Current_Default_Review_Decision': ['Succeeded']}
+   13. Find_Active_Trace_for_Chunk_Record  (OpenApiConnection)  runAfter={'Current_Default_Reason': ['Succeeded']}
+   14. Active_Trace_Found_for_Chunk_Record  (If)  runAfter={'Find_Active_Trace_for_Chunk_Record': ['Succeeded']}
+
+[ROOT > Process_Lane_Until_Empty_or_Limit_Reached > Pending_Chunk_Found [YES] > Chunk_Is_Pending [YES] > Chunk_Payload_Balanced [YES] > Process_Current_Chunk_Records > Chunk_Result_Does_Not_Exist [YES] > Active_Trace_Found_for_Chunk_Record [YES]]
+    1. Current_Active_Trace_Record_for_Chunk  (Compose)
+    2. Active_Trace_Patch_Body  (Compose)  runAfter={'Current_Active_Trace_Record_for_Chunk': ['Succeeded']}
+    3. Refresh_Active_Trace_from_Chunk  (OpenApiConnection)  runAfter={'Active_Trace_Patch_Body': ['Succeeded']}
+    4. Write_Active_Updated_Chunk_Result  (OpenApiConnection)  runAfter={'Refresh_Active_Trace_from_Chunk': ['Succeeded']}
+
+[ROOT > Process_Lane_Until_Empty_or_Limit_Reached > Pending_Chunk_Found [YES] > Chunk_Is_Pending [YES] > Chunk_Payload_Balanced [YES] > Process_Current_Chunk_Records > Chunk_Result_Does_Not_Exist [YES] > Active_Trace_Found_for_Chunk_Record [NO]]
+    1. Find_Historical_Trace_for_Chunk_Record  (OpenApiConnection)
+    2. Historical_Trace_Found_for_Chunk_Record  (If)  runAfter={'Find_Historical_Trace_for_Chunk_Record': ['Succeeded']}
+
+[ROOT > Process_Lane_Until_Empty_or_Limit_Reached > Pending_Chunk_Found [YES] > Chunk_Is_Pending [YES] > Chunk_Payload_Balanced [YES] > Process_Current_Chunk_Records > Chunk_Result_Does_Not_Exist [YES] > Active_Trace_Found_for_Chunk_Record [NO] > Historical_Trace_Found_for_Chunk_Record [YES]]
+    1. Current_Historical_Trace_Record_for_Chunk  (Compose)
+    2. Write_Historical_Match_Chunk_Result  (OpenApiConnection)  runAfter={'Current_Historical_Trace_Record_for_Chunk': ['Succeeded']}
+
+[ROOT > Process_Lane_Until_Empty_or_Limit_Reached > Pending_Chunk_Found [YES] > Chunk_Is_Pending [YES] > Chunk_Payload_Balanced [YES] > Process_Current_Chunk_Records > Chunk_Result_Does_Not_Exist [YES] > Active_Trace_Found_for_Chunk_Record [NO] > Historical_Trace_Found_for_Chunk_Record [NO]]
+    1. Current_Combined_Exception_Text  (Compose)
+    2. Find_Matching_Routing_Rules  (Query)  runAfter={'Current_Combined_Exception_Text': ['Succeeded']}
+    3. Current_Routing_Rule  (Compose)  runAfter={'Find_Matching_Routing_Rules': ['Succeeded']}
+    4. Write_Unmatched_Shipment_Chunk_Result  (OpenApiConnection)  runAfter={'Current_Routing_Rule': ['Succeeded']}
+
+[ROOT > Process_Lane_Until_Empty_or_Limit_Reached > Pending_Chunk_Found [YES] > Chunk_Is_Pending [YES] > Chunk_Payload_Balanced [YES] > Chunk_Results_Balanced [YES]]
+    1. Complete_Tracking_Chunk  (OpenApiConnection)
+    2. Increment_Chunks_Processed_This_Activation  (IncrementVariable)  runAfter={'Complete_Tracking_Chunk': ['Succeeded']}
+
+[ROOT > Process_Lane_Until_Empty_or_Limit_Reached > Pending_Chunk_Found [YES] > Chunk_Is_Pending [YES] > Chunk_Payload_Balanced [YES] > Chunk_Results_Balanced [NO]]
+    1. Fail_Unbalanced_Tracking_Chunk  (OpenApiConnection)
+    2. Set_Fail_Unbalanced_Tracking_Chunk_Error_Message__  (SetVariable)  runAfter={'Fail_Unbalanced_Tracking_Chunk': ['Succeeded']}
+    3. Set_Fail_Unbalanced_Tracking_Chunk_Error  (SetVariable)  runAfter={'Set_Fail_Unbalanced_Tracking_Chunk_Error_Message__': ['Succeeded']}
+
+[ROOT > Process_Lane_Until_Empty_or_Limit_Reached > Pending_Chunk_Found [YES] > Chunk_Is_Pending [YES] > Chunk_Payload_Balanced [NO]]
+    1. Set_Chunk_Unbalanced_Error_Message_  (SetVariable)
+    2. Set_Chunk_Unbalanced  (SetVariable)  runAfter={'Set_Chunk_Unbalanced_Error_Message_': ['Succeeded']}
+
+[ROOT > Process_Lane_Until_Empty_or_Limit_Reached > Pending_Chunk_Found [YES] > Chunk_Is_Pending [NO]]
+    1. Set_Lane_Fatal_Error_Message  (SetVariable)
+    2. Set_Lane_Fatal_Error  (SetVariable)  runAfter={'Set_Lane_Fatal_Error_Message': ['Succeeded']}
+
+[ROOT > Process_Lane_Until_Empty_or_Limit_Reached > Pending_Chunk_Found [NO]]
+    1. No_Lane_Work_Remaining  (SetVariable)
+
+[ROOT > Lane_Activation_Failed [YES]]
+    1. Terminate  (Terminate)

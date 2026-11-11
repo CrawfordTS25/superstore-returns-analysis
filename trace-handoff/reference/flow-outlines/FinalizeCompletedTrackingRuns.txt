@@ -1,0 +1,662 @@
+TRIGGER Recurrence: {"type": "Recurrence", "recurrence": {"frequency": "Minute", "interval": "10", "timeZone": "Central Standard Time"}, "runtimeConfiguration": {"concurrency": {"runs": 1}}}
+## Get_Candidate_Import_Runs [OpenApiConnection] runAfter={'Initialize_Last_Case_Number_Assigned': ['Succeeded']}
+   op: GetItems
+   table = <LIST_IMPORT_RUNS>
+   $filter = @concat( 'ClassificationReady eq 1', ' and FinalizationStatus ne ''Completed''', ' and FinalizationStatus ne ''Failed''' )
+   $orderby = Created desc
+   $top = 1
+## Unfinalized_Import_Run_Found [If] runAfter={'Selected_Import_Run_ID': ['Succeeded']}
+   expression: {"and": [{"equals": ["@greater(\r\n length(\r\n body('Get_Candidate_Import_Runs')?['value']\r\n ),\r\n 0\r\n)", "@true"]}]}
+  ## Current_Candidate_Import_Run [Compose] runAfter={}
+     inputs: @outputs('Newest_Eligible_Import_Run')
+  ## Get_Candidate_Run_Chunks [OpenApiConnection] runAfter={'Finalizer_Selected_Run_Check': ['SUCCEEDED']}
+     op: GetItems
+     table = <LIST_CHUNKS>
+     $filter = @concat( 'field_1 eq ''', outputs('Current_Candidate_Import_Run')?['RunID'], '''' )
+     $orderby = field_3 asc
+     $top = 5000
+  ## Actual_Chunk_Count [Compose] runAfter={'Get_Candidate_Run_Chunks': ['Succeeded']}
+     inputs: @length( body('Get_Candidate_Run_Chunks')?['value'] )
+  ## Expected_Chunk_Count [Compose] runAfter={'Actual_Chunk_Count': ['Succeeded']}
+     inputs: @if( empty( body('Get_Candidate_Run_Chunks')?['value'] ), 0, int( first( body('Get_Candidate_Run_Chunks')?['value'] )?['TotalChunkCount'] ) )
+  ## Filter_Completed_Chunks [Query] runAfter={'Expected_Chunk_Count': ['Succeeded']}
+     inputs: {"from": "@body('Get_Candidate_Run_Chunks')?['value']", "where": "@equals(\n item()?['field_8']?['Value'],\n 'Completed'\n)"}
+  ## Completed_Chunk_Count [Compose] runAfter={'Filter_Completed_Chunks': ['Succeeded']}
+     inputs: @length( body('Filter_Completed_Chunks') )
+  ## Filter_Failed_Chunks [Query] runAfter={'Completed_Chunk_Count': ['Succeeded']}
+     inputs: {"from": "@body('Get_Candidate_Run_Chunks')?['value']", "where": "@equals(\n item()?['field_8']?['Value'],\n 'Failed'\n)"}
+  ## Failed_Chunk_Count [Compose] runAfter={'Filter_Failed_Chunks': ['Succeeded']}
+     inputs: @length( body('Filter_Failed_Chunks') )
+  ## Filter_Incomplete_Chunks [Query] runAfter={'Failed_Chunk_Count': ['Succeeded']}
+     inputs: {"from": "@body('Get_Candidate_Run_Chunks')?['value']", "where": "@not(\n equals(\n item()?['field_8']?['Value'],\n 'Completed'\n )\n)"}
+  ## Incomplete_Chunk_Count [Compose] runAfter={'Filter_Incomplete_Chunks': ['Succeeded']}
+     inputs: @length( body('Filter_Incomplete_Chunks') )
+  ## Candidate_Run_Chunks_Complete [If] runAfter={'Incomplete_Chunk_Count': ['Succeeded']}
+     expression: {"and": [{"equals": ["@and(\r\n greater(\r\n outputs('Actual_Chunk_Count'),\r\n 0\r\n ),\r\n equals(\r\n outputs('Actual_Chunk_Count'),\r\n outputs('Expected_Chunk_Count')\r\n ),\r\n equals(\r\n outputs('Completed_Chunk_Count'),\r\n outputs('Expected_Chunk_Count')\r\n ),\r\n equals(\r\n outputs('Incomplete_Chunk_Count'),\r\n 0\r\n ),\r\n equals(\r\n outputs('Failed_Chunk_Count'),\r\n 0\r\n )\r\n)", "@true"]}]}
+    ## Get_Candidate_Run_Processing_Results_Page_1 [OpenApiConnection] runAfter={}
+       runtimeConfiguration: {"paginationPolicy": {"minimumItemCount": 5000}}
+       op: GetItems
+       table = <LIST_RESULTS>
+       $filter = @concat( 'field_1 eq ''', outputs('Current_Candidate_Import_Run')?['RunID'], '''' )
+       $orderby = ID asc
+       $top = 5000
+    ## Actual_Processing_Result_Count [Compose] runAfter={'All_Candidate_Run_Processing_Results': ['Succeeded']}
+       inputs: @length(outputs('All_Candidate_Run_Processing_Results'))
+    ## Sum_Chunk_Expected_Counts [Foreach] runAfter={'Actual_Processing_Result_Count': ['Succeeded']}
+      ## Add_Chunk_Expected_Count [IncrementVariable] runAfter={}
+         inputs: {"name": "ExpectedProcessingResultCount", "value": "@int(\r\n item()?['field_5']\r\n)"}
+    ## Expected_Processing_Result_Count [Compose] runAfter={'Sum_Chunk_Expected_Counts': ['Succeeded']}
+       inputs: @variables('ExpectedProcessingResultCount')
+    ## Filter_Processing_Error_Results [Query] runAfter={'Expected_Processing_Result_Count': ['Succeeded']}
+       inputs: {"from": "@outputs('All_Candidate_Run_Processing_Results')", "where": "@or(\r\n equals(item()?['field_4']?['Value'], 'Parsed Record Error'),\r\n equals(item()?['field_4'], 'Parsed Record Error'),\r\n equals(item()?['field_4']?['Value'], 'Processing Failed'),\r\n equals(item()?['field_4'], 'Processing Failed')\r\n)"}
+    ## Processing_Error_Result_Count [Compose] runAfter={'Filter_Processing_Error_Results': ['Succeeded']}
+       inputs: @length( body('Filter_Processing_Error_Results') )
+    ## Candidate_Run_Results_Balanced [If] runAfter={'Processing_Error_Result_Count': ['Succeeded']}
+       expression: {"and": [{"equals": ["@and(\r\n greater(\r\n outputs('Expected_Processing_Result_Count'),\r\n 0\r\n ),\r\n equals(\r\n outputs('Actual_Processing_Result_Count'),\r\n outputs('Expected_Processing_Result_Count')\r\n ),\r\n equals(\r\n outputs('Processing_Error_Result_Count'),\r\n 0\r\n )\r\n)", "@true"]}]}
+      ## Generate_Finalizer_Run_ID [Compose] runAfter={}
+         inputs: @concat( 'TRACE-FINALIZER-', string( outputs('Current_Candidate_Import_Run')?['ID'] ), '-', substring( guid(), 0, 8 ) )
+      ## Claim_Import_Run_for_Finalization [OpenApiConnection] runAfter={'Generate_Finalizer_Run_ID': ['Succeeded']}
+         op: PatchItem
+         table = <LIST_IMPORT_RUNS>
+         id = @outputs('Current_Candidate_Import_Run')?['ID']
+         item/Title = @outputs('Current_Candidate_Import_Run')?['Title']
+         item/FileName = @outputs('Current_Candidate_Import_Run')?['FileName']
+         item/RunDate_x002f_Time = @outputs('Current_Candidate_Import_Run')?['RunDate_x002f_Time']
+         item/RunID = @outputs('Current_Candidate_Import_Run')?['RunID']
+         item/FolderType/Value = @outputs('Current_Candidate_Import_Run')?['FolderType']?['Value']
+         item/RowsRead = @int( coalesce( outputs('Current_Candidate_Import_Run')?['RowsRead'], 0 ) )
+         item/RowsCreated = @int( coalesce( outputs('Current_Candidate_Import_Run')?['RowsCreated'], 0 ) )
+         item/RowsUpdated = @int( coalesce( outputs('Current_Candidate_Import_Run')?['RowsUpdated'], 0 ) )
+         item/RowsSkipped = @int( coalesce( outputs('Current_Candidate_Import_Run')?['RowsSkipped'], 0 ) )
+         item/RowsFailed = @int( coalesce( outputs('Current_Candidate_Import_Run')?['RowsFailed'], 0 ) )
+         item/RunStatus/Value = @outputs('Current_Candidate_Import_Run')?['RunStatus']?['Value']
+         item/Notes = @outputs('Current_Candidate_Import_Run')?['Notes']
+         item/HistoricalMatches = @int( coalesce( outputs('Current_Candidate_Import_Run')?['HistoricalMatches'], 0 ) )
+         item/DuplicateRows = @int( coalesce( outputs('Current_Candidate_Import_Run')?['DuplicateRows'], 0 ) )
+         item/SourceFileGroup = @outputs('Current_Candidate_Import_Run')?['SourceFileGroup']
+         item/FinalizationStatus/Value = Processing
+         item/FinalizerRunID = @outputs('Generate_Finalizer_Run_ID')
+         item/FinalizationStartedDate = @utcNow()
+         item/EmailBatchReady = false
+         item/DashboardRefreshRequested = false
+         item/DashboardRefreshCompleted = false
+         item/ClassificationReady = @coalesce( outputs('Current_Candidate_Import_Run')?['ClassificationReady'], false )
+         item/ClassificationCompletedDate = @outputs('Current_Candidate_Import_Run')?['ClassificationCompletedDate']
+         item/ClassificationRefreshRequested = @coalesce( outputs('Current_Candidate_Import_Run')?['ClassificationRefreshRequested'], false )
+         item/ClassificationRefreshRequestedDa = @outputs('Current_Candidate_Import_Run')?['ClassificationRefreshRequestedDate']
+      ## Verify_Import_Run_Finalization_Claim [OpenApiConnection] runAfter={'Claim_Import_Run_for_Finalization': ['Succeeded']}
+         op: GetItem
+         table = <LIST_IMPORT_RUNS>
+         id = @outputs('Current_Candidate_Import_Run')?['ID']
+      ## Import_Run_Claim_Verified [If] runAfter={'Verify_Import_Run_Finalization_Claim': ['Succeeded']}
+         expression: {"and": [{"equals": ["@and(\r\n equals(\r\n outputs('Verify_Import_Run_Finalization_Claim')?['body/FinalizationStatus/Value'],\r\n 'Processing'\r\n ),\r\n equals(\r\n outputs('Verify_Import_Run_Finalization_Claim')?['body/FinalizerRunID'],\r\n outputs('Generate_Finalizer_Run_ID')\r\n )\r\n)", "@true"]}]}
+        ## Filter_New_Case_Required_Results [Query] runAfter={}
+           inputs: {"from": "@outputs('All_Candidate_Run_Processing_Results')", "where": "@and(\r\n equals(\r\n item()?['field_4']?['Value'],\r\n 'New Case Required'\r\n ),\r\n equals(\r\n item()?['CaseCreationEligible'],\r\n true\r\n ),\r\n or(\r\n equals(\r\n item()?['CaseReviewDecision']?['Value'],\r\n 'Auto - Create TRACE Case'\r\n ),\r\n equals(\r\n item()?['CaseReviewDecision'],\r\n 'Auto - Create TRACE Case'\r\n )\r\n )\r\n)"}
+        ## New_Case_Required_Count [Compose] runAfter={'Filter_New_Case_Required_Results': ['Succeeded']}
+           inputs: @length( body('Filter_New_Case_Required_Results') )
+        ## Filter_Active_Updated_Results [Query] runAfter={'New_Case_Created_Count': ['Succeeded']}
+           inputs: {"from": "@outputs('All_Candidate_Run_Processing_Results')", "where": "@equals(\n item()?['field_4']?['Value'],\n 'Active Updated'\n)"}
+        ## Active_Updated_Count [Compose] runAfter={'Filter_Active_Updated_Results': ['Succeeded']}
+           inputs: @length( body('Filter_Active_Updated_Results') )
+        ## Filter_Historical_Match_Results [Query] runAfter={'Active_Updated_Count': ['Succeeded']}
+           inputs: {"from": "@outputs('All_Candidate_Run_Processing_Results')", "where": "@equals(\r\n item()?['field_4']?['Value'],\r\n 'Historical Match'\r\n)"}
+        ## Historical_Match_Count [Compose] runAfter={'Filter_Historical_Match_Results': ['Succeeded']}
+           inputs: @length( body('Filter_Historical_Match_Results') )
+        ## Candidate_Outcome_Distribution_Balanced [If] runAfter={'Unclassified_Result_Count': ['Succeeded']}
+           expression: {"and": [{"equals": ["@and(\r\n equals(\r\n outputs('Classified_Result_Count'),\r\n outputs('Actual_Processing_Result_Count')\r\n ),\r\n equals(\r\n outputs('Unclassified_Result_Count'),\r\n 0\r\n ),\r\n equals(\r\n outputs('Processing_Error_Result_Count'),\r\n 0\r\n )\r\n)", "@true"]}]}
+          ## New_Cases_Required [If] runAfter={'Classification_Refresh_Not_Requested': ['Succeeded']}
+             expression: {"and": [{"equals": ["@and(\r\n equals(\r\n outputs('Pending_Review_Count'),\r\n 0\r\n ),\r\n greater(\r\n outputs('New_Case_Required_Count'),\r\n 0\r\n )\r\n)", "@true"]}]}
+            ## Create_Required_TRACE_Cases [Foreach] runAfter={'Today_Case_Counter_Found': ['Succeeded']}
+               runtimeConfiguration: {"concurrency": {"repetitions": 1}}
+              ## Check_TRACE_Case_Already_Created [OpenApiConnection] runAfter={}
+                 op: GetItems
+                 table = <LIST_TRACE_WORKFLOW>
+                 $filter = @concat( 'TrackingNumber eq ''', replace( items('Create_Required_TRACE_Cases')?['field_3'], '''', '''''' ), '''' )
+                 $top = 1
+              ## TRACE_Case_Does_Not_Exist [If] runAfter={'Check_TRACE_Case_Already_Created': ['Succeeded']}
+                 expression: {"and": [{"equals": ["@equals(\r\n length(\r\n body('Check_TRACE_Case_Already_Created')?['value']\r\n ),\r\n 0\r\n)", "@true"]}]}
+                ## Increment_Current_Case_Sequence [IncrementVariable] runAfter={}
+                   inputs: {"name": "CurrentCaseSequence", "value": 1}
+                ## Current_Case_Number [Compose] runAfter={'Increment_Current_Case_Sequence': ['Succeeded']}
+                   inputs: @concat( variables('CaseDateKey'), formatNumber( variables('CurrentCaseSequence'), '000' ) )
+                ## Current_Trace_ID [Compose] runAfter={'Current_Case_Number': ['Succeeded']}
+                   inputs: @concat( 'TRC-', guid() )
+                ## Reserve_Current_Case_Number [OpenApiConnection] runAfter={'Current_Trace_ID': ['Succeeded']}
+                   op: PatchItem
+                   table = <LIST_CASE_COUNTER>
+                   id = @variables('CounterItemID')
+                   item/Title = @variables('CaseDateKey')
+                   item/LastSequence = @variables('CurrentCaseSequence')
+                   item/LastUpdated = @utcNow()
+                   item/LastCaseNumber = @outputs('Current_Case_Number')
+                   item/LastAutomationRunID = @outputs('Generate_Finalizer_Run_ID')
+                   item/Notes = Case number reserved automatically during scheduled TRACE finalization.
+                ## Create_New_Active_TRACE [OpenApiConnection] runAfter={'Reserve_Current_Case_Number': ['Succeeded']}
+                   op: PostItem
+                   table = <LIST_TRACE_WORKFLOW>
+                   item/TraceID = @outputs('Current_Trace_ID')
+                   item/TrackingNumber = @items('Create_Required_TRACE_Cases')?['field_3'] 
+                   item/CaseNumber = @outputs('Current_Case_Number')
+                   item/PIIPresent = false
+                   item/ClaimRequired = false
+                   item/RecipientOverride = false
+                   item/ContactAttemptCount = 0
+                   item/Title = @concat( outputs('Current_Case_Number'), ' | ', items('Create_Required_TRACE_Cases')?['field_3'] )
+                   item/CaseRiskType/Value = None
+                   item/TraceWorkflowStatus/Value = Needs Review
+                   item/Priority/Value = Normal
+                   item/LastAction = New trace created automatically from the current intake batch.
+                   item/NextAction/Value = Review Trace
+                   item/PIIReviewStatus/Value = Not Required
+                   item/OneTrustFormStatus/Value = Not Required
+                   item/EmailEligible = false
+                   item/ClaimWorkflowStatus/Value = Not Required
+                   item/ShipperName = @items('Create_Required_TRACE_Cases')?['ShipperName']
+                   item/ShipperAddressLine1 = @items('Create_Required_TRACE_Cases')?['ShipperAddressLine1']
+                   item/ShipperAddressLine2 = @items('Create_Required_TRACE_Cases')?['ShipperAddressLine2']
+                   item/ShipperCity = @items('Create_Required_TRACE_Cases')?['ShipperCity']
+                   item/ShipperStateProvince = @items('Create_Required_TRACE_Cases')?['ShipperStateProvince']
+                   item/ShipperPostalCode = @items('Create_Required_TRACE_Cases')?['ShipperPostalCode']
+                   item/ShipperCountry = @items('Create_Required_TRACE_Cases')?['ShipperCountry']
+                   item/ShipperLocationKey = @toUpper( concat( trim( coalesce( items('Create_Required_TRACE_Cases')?['ShipperAddressLine1'], '' ) ), '|', trim( coalesce( items('Create_Required_TRACE_Cases')?['ShipperCity'], '' ) ), '|', trim( coalesce( items('Create_Required_TRACE_Cases')?['ShipperStateProvince'], '' ) ) ) )
+                   item/ContactSource/Value = None
+                   item/ResponseStatus/Value = Not Contacted
+                   item/CarrierResolutionType/Value = None
+                   item/CarrierStatus = @items('Create_Required_TRACE_Cases')?['CarrierStatus']
+                   item/CarrierStatusDescription = @items('Create_Required_TRACE_Cases')?['CarrierStatusDescription']
+                   item/ExceptionDescription = @items('Create_Required_TRACE_Cases')?['ExceptionDescription']
+                   item/ExceptionResolution = @items('Create_Required_TRACE_Cases')?['ExceptionResolution']
+                   item/ScheduledDeliveryDate = @if( empty( items('Create_Required_TRACE_Cases')?['ScheduledDeliveryDate'] ), null, items('Create_Required_TRACE_Cases')?['ScheduledDeliveryDate'] )
+                   item/LastSourceUpdateDate = @utcNow()
+                   item/LastImportRunID = @outputs('Current_Candidate_Import_Run')?['RunID']
+                   item/SourceProcessingCycle/Value = @outputs('Current_Candidate_Import_Run')?['FolderType']?['Value']
+                   item/SourceCreatedDate = @utcNow()
+                   item/ShipperAttention = @items('Create_Required_TRACE_Cases')?['ShipperAttention']
+                   item/ShipToAttention = @items('Create_Required_TRACE_Cases')?['ShipToAttention'] 
+                   item/ShipToName = @items('Create_Required_TRACE_Cases')?['ShipToName']
+                   item/ShipToAddressLine1 = @items('Create_Required_TRACE_Cases')?['ShipToAddressLine1']
+                   item/ShipToAddressLine2 = @items('Create_Required_TRACE_Cases')?['ShipToAddressLine2']
+                   item/ShipToCity = @items('Create_Required_TRACE_Cases')?['ShipToCity']
+                   item/ShipToStateProvince = @items('Create_Required_TRACE_Cases')?['ShipToStateProvince']
+                   item/ShipToPostalCode = @items('Create_Required_TRACE_Cases')?['ShipToPostalCode']
+                   item/ShipToCountry = @items('Create_Required_TRACE_Cases')?['ShipToCountry']
+                   item/ShipToTelephone = @items('Create_Required_TRACE_Cases')?['ShipToTelephone']
+                   item/ActiveTicklerStatus/Value = Setup Required
+                   item/CommunicationLockStatus/Value = None
+                   item/CommunicationShippingLocationTyp/Value = Unknown
+                ## Complete_New_Case_Processing_Result [OpenApiConnection] runAfter={'Create_New_Active_TRACE': ['Succeeded']}
+                   op: PatchItem
+                   table = <LIST_RESULTS>
+                   id = @items('Create_Required_TRACE_Cases')?['ID']
+                   item/Title = @items('Create_Required_TRACE_Cases')?['Title']
+                   item/field_1 = @items('Create_Required_TRACE_Cases')?['field_1']
+                   item/field_2 = @items('Create_Required_TRACE_Cases')?['field_2']
+                   item/field_3 = @items('Create_Required_TRACE_Cases')?['field_3']
+                   item/field_6 = @int(1)
+                   item/field_8 = @utcNow()
+                   item/field_4/Value = New Case Created
+                   item/field_5 = @body('Create_New_Active_TRACE')?['ID']
+                   item/field_7 = @null
+                   item/field_9 = @outputs('Current_Case_Number')
+                   item/CarrierStatus = @items('Create_Required_TRACE_Cases')?['CarrierStatus']
+                   item/CarrierStatusDescription = @items('Create_Required_TRACE_Cases')?['CarrierStatusDescription']
+                   item/ExceptionDescription = @items('Create_Required_TRACE_Cases')?['ExceptionDescription']
+                   item/ExceptionResolution = @items('Create_Required_TRACE_Cases')?['ExceptionResolution']
+                   item/ScheduledDeliveryDate = @if( empty( items('Create_Required_TRACE_Cases')?['ScheduledDeliveryDate'] ), null, items('Create_Required_TRACE_Cases')?['ScheduledDeliveryDate'] )
+                   item/ChunkNumber = @items('Create_Required_TRACE_Cases')?['ChunkNumber']
+                   item/CaseCreationEligible = @false
+                   item/CaseCreationReason = TRACE case created successfully by the finalizer.
+                   item/CaseReviewDecision/Value = Auto - Create TRACE Case
+                ## Increment_Created_Case_Count [IncrementVariable] runAfter={'Set_Last_Case_Number_Assigned': ['Succeeded']}
+                   inputs: {"name": "CreatedCaseCount", "value": 1}
+                ## Set_Last_Case_Number_Assigned [SetVariable] runAfter={'Complete_New_Case_Processing_Result': ['Succeeded']}
+                   inputs: {"name": "LastCaseNumberAssigned", "value": "@outputs('Current_Case_Number')"}
+                -- ELSE
+                ## Current_Existing_TRACE_Case [Compose] runAfter={}
+                   inputs: @first( body('Check_TRACE_Case_Already_Created')?['value'] )
+                ## Link_Existing_TRACE_Case_to_Result [OpenApiConnection] runAfter={'Refresh_Existing_TRACE_Shipment_Details': ['Succeeded']}
+                   op: PatchItem
+                   table = <LIST_RESULTS>
+                   id = @items('Create_Required_TRACE_Cases')?['ID']
+                   item/Title = @items('Create_Required_TRACE_Cases')?['Title']
+                   item/field_1 = @items('Create_Required_TRACE_Cases')?['field_1']
+                   item/field_2 = @items('Create_Required_TRACE_Cases')?['field_2']
+                   item/field_3 = @items('Create_Required_TRACE_Cases')?['field_3']
+                   item/field_6 = @int(1)
+                   item/field_8 = @utcNow()
+                   item/field_4/Value = Active Updated
+                   item/field_5 = @outputs('Current_Existing_TRACE_Case')?['ID']
+                   item/field_7 = @null
+                   item/field_9 = @outputs('Current_Existing_TRACE_Case')?['CaseNumber']
+                   item/CarrierStatus = @items('Create_Required_TRACE_Cases')?['CarrierStatus']
+                   item/CarrierStatusDescription = @items('Create_Required_TRACE_Cases')?['CarrierStatusDescription']
+                   item/ExceptionDescription = @items('Create_Required_TRACE_Cases')?['ExceptionDescription']
+                   item/ExceptionResolution = @items('Create_Required_TRACE_Cases')?['ExceptionResolution']
+                   item/ScheduledDeliveryDate = @if( empty( items('Create_Required_TRACE_Cases')?['ScheduledDeliveryDate'] ), null, items('Create_Required_TRACE_Cases')?['ScheduledDeliveryDate'] )
+                   item/ChunkNumber = @items('Create_Required_TRACE_Cases')?['ChunkNumber']
+                   item/CaseCreationEligible = @false
+                   item/CaseCreationReason = Existing TRACE case found; existing case number retained.
+                   item/CaseReviewDecision/Value = Auto - No Review Required
+                ## Refresh_Existing_TRACE_Shipment_Details [OpenApiConnection] runAfter={'Current_Existing_TRACE_Case': ['Succeeded']}
+                   op: PatchItem
+                   table = <LIST_TRACE_WORKFLOW>
+                   id = @outputs('Current_Existing_TRACE_Case')?['ID']
+                   item/TraceID = @outputs('Current_Existing_TRACE_Case')?['TraceID']
+                   item/TrackingNumber = @outputs('Current_Existing_TRACE_Case')?['TrackingNumber']
+                   item/CaseNumber = @outputs('Current_Existing_TRACE_Case')?['CaseNumber']
+                   item/PIIPresent = @outputs('Current_Existing_TRACE_Case')?['PIIPresent']
+                   item/ClaimRequired = @outputs('Current_Existing_TRACE_Case')?['ClaimRequired']
+                   item/RecipientOverride = @outputs('Current_Existing_TRACE_Case')?['RecipientOverride']
+                   item/ContactAttemptCount = @outputs('Current_Existing_TRACE_Case')?['ContactAttemptCount']
+                   item/Title = @outputs('Current_Existing_TRACE_Case')?['Title']
+                   item/CaseRiskType/Value = @outputs('Current_Existing_TRACE_Case')?['CaseRiskType']?['Value']
+                   item/TraceWorkflowStatus/Value = @outputs('Current_Existing_TRACE_Case')?['TraceWorkflowStatus']?['Value']
+                   item/Priority/Value = @outputs('Current_Existing_TRACE_Case')?['Priority']?['Value']
+                   item/NextAction/Value = @outputs('Current_Existing_TRACE_Case')?['NextAction']?['Value']
+                   item/PIIReviewStatus/Value = @outputs('Current_Existing_TRACE_Case')?['PIIReviewStatus']?['Value']
+                   item/OneTrustFormStatus/Value = @outputs('Current_Existing_TRACE_Case')?['OneTrustFormStatus']?['Value']
+                   item/EmailEligible = @outputs('Current_Existing_TRACE_Case')?['EmailEligible']
+                   item/ClaimWorkflowStatus/Value = @outputs('Current_Existing_TRACE_Case')?['ClaimWorkflowStatus']?['Value']
+                   item/ShipperName = @if( empty( items('Create_Required_TRACE_Cases')?['ShipperName'] ), outputs('Current_Existing_TRACE_Case')?['ShipperName'], items('Create_Required_TRACE_Cases')?['ShipperName'] )
+                   item/ShipperAddressLine1 = @if( empty( items('Create_Required_TRACE_Cases')?['ShipperAddressLine1'] ), outputs('Current_Existing_TRACE_Case')?['ShipperAddressLine1'], items('Create_Required_TRACE_Cases')?['ShipperAddressLine1'] ) 
+                   item/ShipperAddressLine2 = @if( empty( items('Create_Required_TRACE_Cases')?['ShipperAddressLine2'] ), outputs('Current_Existing_TRACE_Case')?['ShipperAddressLine2'], items('Create_Required_TRACE_Cases')?['ShipperAddressLine2'] )
+                   item/ShipperCity = @if( empty( items('Create_Required_TRACE_Cases')?['ShipperCity'] ), outputs('Current_Existing_TRACE_Case')?['ShipperCity'], items('Create_Required_TRACE_Cases')?['ShipperCity'] )
+                   item/ShipperStateProvince = @if( empty( items('Create_Required_TRACE_Cases')?['ShipperStateProvince'] ), outputs('Current_Existing_TRACE_Case')?['ShipperStateProvince'], items('Create_Required_TRACE_Cases')?['ShipperStateProvince'] ) 
+                   item/ShipperPostalCode = @if( empty( items('Create_Required_TRACE_Cases')?['ShipperPostalCode'] ), outputs('Current_Existing_TRACE_Case')?['ShipperPostalCode'], items('Create_Required_TRACE_Cases')?['ShipperPostalCode'] )
+                   item/ShipperCountry = @if( empty( items('Create_Required_TRACE_Cases')?['ShipperCountry'] ), outputs('Current_Existing_TRACE_Case')?['ShipperCountry'], items('Create_Required_TRACE_Cases')?['ShipperCountry'] )
+                   item/ContactSource/Value = @outputs('Current_Existing_TRACE_Case')?['ContactSource']?['Value']
+                   item/ResponseStatus/Value = @outputs('Current_Existing_TRACE_Case')?['ResponseStatus']?['Value']
+                   item/CarrierResolutionType/Value = @outputs('Current_Existing_TRACE_Case')?['CarrierResolutionType']?['Value'] 
+                   item/LastSourceUpdateDate = @utcNow()
+                   item/LastImportRunID = @outputs('Current_Candidate_Import_Run')?['RunID']
+                   item/SourceProcessingCycle/Value = @outputs('Current_Candidate_Import_Run')?['FolderType']?['Value']
+                   item/ShipperAttention = @if( empty( items('Create_Required_TRACE_Cases')?['ShipperAttention'] ), outputs('Current_Existing_TRACE_Case')?['ShipperAttention'], items('Create_Required_TRACE_Cases')?['ShipperAttention'] )
+                   item/ShipToAttention = @if( empty( items('Create_Required_TRACE_Cases')?['ShipToAttention'] ), outputs('Current_Existing_TRACE_Case')?['ShipToAttention'], items('Create_Required_TRACE_Cases')?['ShipToAttention'] )
+                   item/ShipToName = @if( empty( items('Create_Required_TRACE_Cases')?['ShipToName'] ), outputs('Current_Existing_TRACE_Case')?['ShipToName'], items('Create_Required_TRACE_Cases')?['ShipToName'] )
+                   item/ShipToAddressLine1 = @if( empty( items('Create_Required_TRACE_Cases')?['ShipToAddressLine1'] ), outputs('Current_Existing_TRACE_Case')?['ShipToAddressLine1'], items('Create_Required_TRACE_Cases')?['ShipToAddressLine1'] )
+                   item/ShipToAddressLine2 = @if( empty( items('Create_Required_TRACE_Cases')?['ShipToAddressLine2'] ), outputs('Current_Existing_TRACE_Case')?['ShipToAddressLine2'], items('Create_Required_TRACE_Cases')?['ShipToAddressLine2'] )
+                   item/ShipToCity = @if( empty( items('Create_Required_TRACE_Cases')?['ShipToCity'] ), outputs('Current_Existing_TRACE_Case')?['ShipToCity'], items('Create_Required_TRACE_Cases')?['ShipToCity'] )
+                   item/ShipToStateProvince = @if( empty( items('Create_Required_TRACE_Cases')?['ShipToStateProvince'] ), outputs('Current_Existing_TRACE_Case')?['ShipToStateProvince'], items('Create_Required_TRACE_Cases')?['ShipToStateProvince'] ) 
+                   item/ShipToPostalCode = @if( empty( items('Create_Required_TRACE_Cases')?['ShipToPostalCode'] ), outputs('Current_Existing_TRACE_Case')?['ShipToPostalCode'], items('Create_Required_TRACE_Cases')?['ShipToPostalCode'] )
+                   item/ShipToCountry = @if( empty( items('Create_Required_TRACE_Cases')?['ShipToCountry'] ), outputs('Current_Existing_TRACE_Case')?['ShipToCountry'], items('Create_Required_TRACE_Cases')?['ShipToCountry'] )
+                   item/ShipToTelephone = @if( empty( items('Create_Required_TRACE_Cases')?['ShipToTelephone'] ), outputs('Current_Existing_TRACE_Case')?['ShipToTelephone'], items('Create_Required_TRACE_Cases')?['ShipToTelephone'] )
+                   item/ActiveTicklerStatus/Value = @outputs('Current_Existing_TRACE_Case')?['ActiveTicklerStatus']?['Value']
+                   item/CommunicationLockStatus/Value = @outputs('Current_Existing_TRACE_Case')?['CommunicationLockStatus']?['Value']
+                   item/CommunicationShippingLocationTyp/Value = @outputs('Current_Existing_TRACE_Case')?['CommunicationShippingLocationType']?['Value']
+                   item/ReportedToUPS = @outputs('Current_Existing_TRACE_Case')?['ReportedToUPS']
+                   item/SearchComplete = @outputs('Current_Existing_TRACE_Case')?['SearchComplete']
+            ## Find_Today_Case_Counter [OpenApiConnection] runAfter={}
+               op: GetItems
+               table = <LIST_CASE_COUNTER>
+               $filter = @concat( 'Title eq ''', variables('CaseDateKey'), '''' )
+               $top = 1
+            ## Today_Case_Counter_Found [If] runAfter={'Find_Today_Case_Counter': ['Succeeded']}
+               expression: {"and": [{"equals": ["@greater(\r\n length(\r\n body('Find_Today_Case_Counter')?['value']\r\n ),\r\n 0\r\n)", "@true"]}]}
+              ## Set_Existing_Counter_Item_ID [SetVariable] runAfter={}
+                 inputs: {"name": "CounterItemID", "value": "@int(\r\n first(\r\n body('Find_Today_Case_Counter')?['value']\r\n )?['ID']\r\n)"}
+              ## Set_Existing_Case_Sequence [SetVariable] runAfter={'Set_Existing_Counter_Item_ID': ['Succeeded']}
+                 inputs: {"name": "CurrentCaseSequence", "value": "@int(\r\n coalesce(\r\n first(\r\n body('Find_Today_Case_Counter')?['value']\r\n )?['LastSequence'],\r\n 0\r\n )\r\n)"}
+              -- ELSE
+              ## Create_Today_Case_Counter [OpenApiConnection] runAfter={}
+                 op: PostItem
+                 table = <LIST_CASE_COUNTER>
+                 item/Title = @variables('CaseDateKey')
+                 item/LastSequence = 0
+                 item/LastUpdated = @utcNow()
+                 item/LastAutomationRunID = @outputs('Generate_Finalizer_Run_ID')
+                 item/Notes = Daily TRACE case-number counter created automatically by the scheduled finalizer.
+              ## Set_New_Counter_Item_ID [SetVariable] runAfter={'Create_Today_Case_Counter': ['Succeeded']}
+                 inputs: {"name": "CounterItemID", "value": "@int(\r\n body('Create_Today_Case_Counter')?['ID']\r\n)"}
+              ## Set_New_Case_Sequence [SetVariable] runAfter={'Set_New_Counter_Item_ID': ['Succeeded']}
+                 inputs: {"name": "CurrentCaseSequence", "value": "@int(0)"}
+            ## Calculated_First_Case_Number_Assigned [Compose] runAfter={'Create_Required_TRACE_Cases': ['Succeeded']}
+               inputs: @if( greater( variables('CreatedCaseCount'), 0 ), concat( variables('CaseDateKey'), formatNumber( add( sub( variables('CurrentCaseSequence'), variables('CreatedCaseCount') ), 1 ), '000' ) ), '' )
+            ## Set_First_Case_Number_Assigned [SetVariable] runAfter={'Calculated_First_Case_Number_Assigned': ['Succeeded']}
+               inputs: {"name": "FirstCaseNumberAssigned", "value": "@outputs('Calculated_First_Case_Number_Assigned')"}
+            ## Get_Remaining_New_Case_Required_Results [OpenApiConnection] runAfter={'Set_First_Case_Number_Assigned': ['Succeeded']}
+               op: GetItems
+               table = <LIST_RESULTS>
+               $filter = @concat( 'field_1 eq ''', outputs('Current_Candidate_Import_Run')?['RunID'], ''' and field_4 eq ''New Case Required'' and CaseCreationEligible eq 1' )
+               $top = 1
+            ## Remaining_New_Cases_Found [If] runAfter={'Get_Remaining_New_Case_Required_Results': ['Succeeded']}
+               expression: {"and": [{"greater": ["@length(\r\n body('Get_Remaining_New_Case_Required_Results')?['value']\r\n)", 0]}]}
+              ## Release_Import_Run_for_Next_Case_Block [OpenApiConnection] runAfter={}
+                 op: PatchItem
+                 table = <LIST_IMPORT_RUNS>
+                 id = @outputs('Current_Candidate_Import_Run')?['ID']
+                 item/Title = @outputs('Current_Candidate_Import_Run')?['Title']
+                 item/FileName = @outputs('Current_Candidate_Import_Run')?['FileName']
+                 item/RunDate_x002f_Time = @outputs('Current_Candidate_Import_Run')?['RunDate_x002f_Time']
+                 item/RunID = @outputs('Current_Candidate_Import_Run')?['RunID']
+                 item/FolderType/Value = @outputs('Current_Candidate_Import_Run')?['FolderType']?['Value']
+                 item/RowsRead = @outputs('Actual_Processing_Result_Count')
+                 item/RowsCreated = @add( int( coalesce( outputs('Current_Candidate_Import_Run')?['RowsCreated'], 0 ) ), variables('CreatedCaseCount') )
+                 item/RowsUpdated = @outputs('Active_Updated_Count')
+                 item/RowsSkipped = @int( coalesce( outputs('Current_Candidate_Import_Run')?['RowsSkipped'], 0 ) )
+                 item/RowsFailed = @int(0)
+                 item/RunStatus/Value = Started
+                 item/ErrorMessage = @null
+                 item/ProcessedFilePath = @null
+                 item/Notes = @outputs('Current_Candidate_Import_Run')?['Notes']
+                 item/HistoricalMatches = @outputs('Historical_Match_Count')
+                 item/DuplicateRows = @int( coalesce( outputs('Current_Candidate_Import_Run')?['DuplicateRows'], 0 ) )
+                 item/FirstCaseNumberAssigned = @if( empty( outputs('Current_Candidate_Import_Run')?['FirstCaseNumberAssigned'] ), variables('FirstCaseNumberAssigned'), outputs('Current_Candidate_Import_Run')?['FirstCaseNumberAssigned'] )
+                 item/LastCaseNumberAssigned = @if( greater( variables('CreatedCaseCount'), 0 ), variables('LastCaseNumberAssigned'), outputs('Current_Candidate_Import_Run')?['LastCaseNumberAssigned'] )
+                 item/RunCompletedDate_x002f_Time = @null
+                 item/SourceFileGroup = @outputs('Current_Candidate_Import_Run')?['SourceFileGroup']
+                 item/FinalizationStatus/Value = Not Started
+                 item/FinalizerRunID = @null
+                 item/FinalizationStartedDate = @null
+                 item/FinalizationCompletedDate = @null
+                 item/FinalizationErrorMessage = @null
+                 item/EmailBatchReady = @false
+                 item/DashboardRefreshRequested = @false
+                 item/DashboardRefreshRequestedDate = @null
+                 item/DashboardRefreshCompleted = @false
+                 item/ClassificationReady = @true
+                 item/ClassificationCompletedDate = @coalesce( outputs('Current_Candidate_Import_Run')?['ClassificationCompletedDate'], utcNow() )
+                 item/ClassificationRefreshRequested = @true
+                 item/ClassificationRefreshRequestedDa = @coalesce( outputs('Current_Candidate_Import_Run')?['ClassificationRefreshRequestedDate'], utcNow() )
+              -- ELSE
+              ## Filter_Unresolved_Final_Results [Query] runAfter={'All_Final_Run_Processing_Results_v2': ['Succeeded']}
+                 inputs: {"from": "@outputs('All_Final_Run_Processing_Results_v2')", "where": "@or(\r\n equals(\r\n item()?['field_4']?['Value'],\r\n 'New Case Required'\r\n ),\r\n equals(\r\n item()?['field_4']?['Value'],\r\n 'Parsed Record Error'\r\n ),\r\n equals(\r\n item()?['field_4']?['Value'],\r\n 'Processing Failed'\r\n ),\r\n and(\r\n equals(\r\n item()?['field_4']?['Value'],\r\n 'New Case Created'\r\n ),\r\n or(\r\n empty(\r\n string(\r\n item()?['field_5']\r\n )\r\n ),\r\n empty(\r\n string(\r\n item()?['field_9']\r\n )\r\n )\r\n )\r\n )\r\n)"}
+              ## Unresolved_Final_Result_Count [Compose] runAfter={'Filter_Unresolved_Final_Results': ['Succeeded']}
+                 inputs: @length( body('Filter_Unresolved_Final_Results') )
+              ## Final_Processing_Result_Count [Compose] runAfter={'Unresolved_Final_Result_Count': ['Succeeded']}
+                 inputs: @length(outputs('All_Final_Run_Processing_Results_v2'))
+              ## Final_Run_Reconciliation_Passed [If] runAfter={'Final_Processing_Result_Count': ['Succeeded']}
+                 expression: {"and": [{"equals": ["@and(\r\n greater(\r\n outputs('Final_Processing_Result_Count'),\r\n 0\r\n ),\r\n equals(\r\n outputs('Final_Processing_Result_Count'),\r\n outputs('Expected_Processing_Result_Count')\r\n ),\r\n equals(\r\n outputs('Unresolved_Final_Result_Count'),\r\n 0\r\n )\r\n)", "@true"]}]}
+                ## Request_TRACE_Dashboard_Refresh [OpenApiConnection] runAfter={}
+                   op: RefreshDataset
+                   groupid = <PBI_WORKSPACE_ID>
+                   datasetid = <PBI_DATASET_ID>
+                ## Complete_Import_Run_Finalization [OpenApiConnection] runAfter={'Request_TRACE_Dashboard_Refresh': ['Succeeded']}
+                   op: PatchItem
+                   table = <LIST_IMPORT_RUNS>
+                   id = @outputs('Current_Candidate_Import_Run')?['ID']
+                   item/Title = @outputs('Current_Candidate_Import_Run')?['Title']
+                   item/FileName = @outputs('Current_Candidate_Import_Run')?['FileName']
+                   item/RunDate_x002f_Time = @outputs('Current_Candidate_Import_Run')?['RunDate_x002f_Time']
+                   item/RunID = @outputs('Current_Candidate_Import_Run')?['RunID']
+                   item/FolderType/Value = @outputs('Current_Candidate_Import_Run')?['FolderType']?['Value']
+                   item/RowsRead = @outputs('Actual_Processing_Result_Count')
+                   item/RowsCreated = @add( int( coalesce( outputs('Current_Candidate_Import_Run')?['RowsCreated'], 0 ) ), variables('CreatedCaseCount') )
+                   item/RowsUpdated = @outputs('Active_Updated_Count')
+                   item/RowsSkipped = @int( coalesce( outputs('Current_Candidate_Import_Run')?['RowsSkipped'], 0 ) )
+                   item/RowsFailed = @int(0)
+                   item/RunStatus/Value = @if( greater( outputs('Pending_Review_Count'), 0 ), 'Started', 'Completed' )
+                   item/ErrorMessage = @null
+                   item/ProcessedFilePath = @null
+                   item/Notes = @concat( coalesce( outputs('Current_Candidate_Import_Run')?['Notes'], '' ), ' Tracking classification, TRACE case creation, final reconciliation, and dashboard refresh request completed.' )
+                   item/HistoricalMatches = @outputs('Historical_Match_Count')
+                   item/DuplicateRows = @int( coalesce( outputs('Current_Candidate_Import_Run')?['DuplicateRows'], 0 ) )
+                   item/FirstCaseNumberAssigned = @if( empty( outputs('Current_Candidate_Import_Run')?['FirstCaseNumberAssigned'] ), variables('FirstCaseNumberAssigned'), outputs('Current_Candidate_Import_Run')?['FirstCaseNumberAssigned'] )
+                   item/LastCaseNumberAssigned = @if( greater( variables('CreatedCaseCount'), 0 ), variables('LastCaseNumberAssigned'), outputs('Current_Candidate_Import_Run')?['LastCaseNumberAssigned'] )
+                   item/RunCompletedDate_x002f_Time = @utcNow()
+                   item/SourceFileGroup = @outputs('Current_Candidate_Import_Run')?['SourceFileGroup']
+                   item/FinalizationStatus/Value = @if( greater( outputs('Pending_Review_Count'), 0 ), 'Awaiting Review', 'Completed' )
+                   item/FinalizerRunID = @outputs('Generate_Finalizer_Run_ID')
+                   item/FinalizationStartedDate = @outputs('Verify_Import_Run_Finalization_Claim')?['body/FinalizationStartedDate']
+                   item/FinalizationCompletedDate = @utcNow()
+                   item/FinalizationErrorMessage = @null
+                   item/EmailBatchReady = @equals( outputs('Pending_Review_Count'), 0 )
+                   item/DashboardRefreshRequested = @true
+                   item/DashboardRefreshRequestedDate = @utcNow()
+                   item/DashboardRefreshCompleted = @false
+                   item/ClassificationReady = @true
+                   item/ClassificationCompletedDate = @coalesce( outputs('Verify_Import_Run_Finalization_Claim')?['body/ClassificationCompletedDate'], utcNow() )
+                   item/ClassificationRefreshRequested = @true
+                   item/ClassificationRefreshRequestedDa = @coalesce( outputs('Verify_Import_Run_Finalization_Claim')?['body/ClassificationRefreshRequestedDate'], utcNow() )
+                -- ELSE
+                ## Fail_Final_Reconciliation [OpenApiConnection] runAfter={}
+                   op: PatchItem
+                   table = <LIST_IMPORT_RUNS>
+                   id = @outputs('Current_Candidate_Import_Run')?['ID']
+                   item/Title = @outputs('Current_Candidate_Import_Run')?['Title']
+                   item/FileName = @outputs('Current_Candidate_Import_Run')?['FileName']
+                   item/RunDate_x002f_Time = @outputs('Current_Candidate_Import_Run')?['RunDate_x002f_Time']
+                   item/RunID = @outputs('Current_Candidate_Import_Run')?['RunID']
+                   item/FolderType/Value = @outputs('Current_Candidate_Import_Run')?['FolderType']?['Value']
+                   item/RowsRead = @outputs('Actual_Processing_Result_Count')
+                   item/RowsCreated = @add( int( coalesce( outputs('Current_Candidate_Import_Run')?['RowsCreated'], 0 ) ), variables('CreatedCaseCount') )
+                   item/RowsUpdated = @outputs('Active_Updated_Count')
+                   item/RowsSkipped = @int( coalesce( outputs('Current_Candidate_Import_Run')?['RowsSkipped'], 0 ) )
+                   item/RowsFailed = @outputs('Unresolved_Final_Result_Count')
+                   item/RunStatus/Value = Failed
+                   item/ErrorMessage = @null
+                   item/ProcessedFilePath = @null
+                   item/Notes = @concat( coalesce( outputs('Current_Candidate_Import_Run')?['Notes'], '' ), ' TRACE case processing reached final reconciliation, but reconciliation failed. Review FinalizationErrorMessage before retrying.' )
+                   item/HistoricalMatches = @outputs('Historical_Match_Count')
+                   item/DuplicateRows = @int( coalesce( outputs('Current_Candidate_Import_Run')?['DuplicateRows'], 0 ) )
+                   item/FirstCaseNumberAssigned = @if( empty( outputs('Current_Candidate_Import_Run')?['FirstCaseNumberAssigned'] ), variables('FirstCaseNumberAssigned'), outputs('Current_Candidate_Import_Run')?['FirstCaseNumberAssigned'] )
+                   item/LastCaseNumberAssigned = @if( greater( variables('CreatedCaseCount'), 0 ), variables('LastCaseNumberAssigned'), outputs('Current_Candidate_Import_Run')?['LastCaseNumberAssigned'] )
+                   item/RunCompletedDate_x002f_Time = @utcNow()
+                   item/SourceFileGroup = @outputs('Current_Candidate_Import_Run')?['SourceFileGroup']
+                   item/FinalizationStatus/Value = Failed
+                   item/FinalizerRunID = @outputs('Generate_Finalizer_Run_ID')
+                   item/FinalizationStartedDate = @outputs('Verify_Import_Run_Finalization_Claim')?['body/FinalizationStartedDate']
+                   item/FinalizationCompletedDate = @utcNow()
+                   item/FinalizationErrorMessage = @concat( 'Final reconciliation failed. Expected ', string( outputs('Expected_Processing_Result_Count') ), ' processing results, found ', string( outputs('Final_Processing_Result_Count') ), ', with ', string( outputs('Unresolved_Final_Result_Count') ), ' unresolved result(s). Flow run: ', workflow()?['run']?['name'], '.' )
+                   item/EmailBatchReady = @false
+                   item/DashboardRefreshRequested = @false
+                   item/DashboardRefreshRequestedDate = @null
+                   item/DashboardRefreshCompleted = @false
+                   item/ClassificationReady = @coalesce( outputs('Current_Candidate_Import_Run')?['ClassificationReady'], false )
+                   item/ClassificationCompletedDate = @outputs('Current_Candidate_Import_Run')?['ClassificationCompletedDate']
+                   item/ClassificationRefreshRequested = @coalesce( outputs('Current_Candidate_Import_Run')?['ClassificationRefreshRequested'], false )
+                   item/ClassificationRefreshRequestedDa = @outputs('Current_Candidate_Import_Run')?['ClassificationRefreshRequestedDate']
+              ## Get_Final_Run_Processing_Results_Page_2 [OpenApiConnection] runAfter={'Final_Results_Page_1_Last_ID_v2': ['Succeeded']}
+                 runtimeConfiguration: {"paginationPolicy": {"minimumItemCount": 5000}}
+                 op: GetItems
+                 table = <LIST_RESULTS>
+                 $filter = @concat( 'field_1 eq ''', replace( outputs('Current_Candidate_Import_Run')?['RunID'], '''', '''''' ), ''' and ID gt ', string(outputs('Final_Results_Page_1_Last_ID_v2')) )
+                 $orderby = ID asc
+                 $top = 5000
+              ## Final_Results_Page_1_Last_ID_v2 [Compose] runAfter={'Get_Final_Run_Processing_Results_Page_1_v2': ['Succeeded']}
+                 inputs: @if( empty(body('Get_Final_Run_Processing_Results_Page_1_v2')?['value']), 0, int( last( body('Get_Final_Run_Processing_Results_Page_1_v2')?['value'] )?['ID'] ) )
+              ## All_Final_Run_Processing_Results_v2 [Compose] runAfter={'Get_Final_Run_Processing_Results_Page_2': ['Succeeded']}
+                 inputs: @union( body('Get_Final_Run_Processing_Results_Page_1_v2')?['value'], body('Get_Final_Run_Processing_Results_Page_2')?['value'] )
+              ## Get_Final_Run_Processing_Results_Page_1_v2 [OpenApiConnection] runAfter={}
+                 runtimeConfiguration: {"paginationPolicy": {"minimumItemCount": 5000}}
+                 op: GetItems
+                 table = <LIST_RESULTS>
+                 $filter = @concat( 'field_1 eq ''', replace( outputs('Current_Candidate_Import_Run')?['RunID'], '''', '''''' ), '''' )
+                 $orderby = ID asc
+                 $top = 5000
+            -- ELSE
+            ## Request_TRACE_Dashboard_Refresh_-_No_New_Cases [OpenApiConnection] runAfter={}
+               op: RefreshDataset
+               groupid = <PBI_WORKSPACE_ID>
+               datasetid = <PBI_DATASET_ID>
+            ## Complete_Import_Run_Finalization_-_No_New_Cases [OpenApiConnection] runAfter={'Request_TRACE_Dashboard_Refresh_-_No_New_Cases': ['Succeeded']}
+               op: PatchItem
+               table = <LIST_IMPORT_RUNS>
+               id = @outputs('Current_Candidate_Import_Run')?['ID']
+               item/Title = @outputs('Current_Candidate_Import_Run')?['Title']
+               item/FileName = @outputs('Current_Candidate_Import_Run')?['FileName']
+               item/RunDate_x002f_Time = @outputs('Current_Candidate_Import_Run')?['RunDate_x002f_Time']
+               item/RunID = @outputs('Current_Candidate_Import_Run')?['RunID']
+               item/FolderType/Value = @outputs('Current_Candidate_Import_Run')?['FolderType']?['Value']
+               item/RowsRead = @outputs('Actual_Processing_Result_Count')
+               item/RowsCreated = @int( coalesce( outputs('Current_Candidate_Import_Run')?['RowsCreated'], 0 ) )
+               item/RowsUpdated = @outputs('Active_Updated_Count')
+               item/RowsSkipped = @int( coalesce( outputs('Current_Candidate_Import_Run')?['RowsSkipped'], 0 ) )
+               item/RowsFailed = @int(0)
+               item/RunStatus/Value = @if( greater( outputs('Pending_Review_Count'), 0 ), 'Started', 'Completed' )
+               item/ErrorMessage = @null
+               item/ProcessedFilePath = @null
+               item/Notes = @if( greater( outputs('Pending_Review_Count'), 0 ), concat( coalesce( outputs('Current_Candidate_Import_Run')?['Notes'], '' ), ' Classification completed. ', string( outputs('Pending_Review_Count') ), ' shipment result(s) require case-review decisions before TRACE finalization can continue.' ), concat( coalesce( outputs('Current_Candidate_Import_Run')?['Notes'], '' ), ' Tracking classification and final reconciliation completed with no new TRACE cases required.' ) )
+               item/HistoricalMatches = @outputs('Historical_Match_Count')
+               item/DuplicateRows = @int( coalesce( outputs('Current_Candidate_Import_Run')?['DuplicateRows'], 0 ) )
+               item/FirstCaseNumberAssigned = @outputs('Current_Candidate_Import_Run')?['FirstCaseNumberAssigned']
+               item/LastCaseNumberAssigned = @outputs('Current_Candidate_Import_Run')?['LastCaseNumberAssigned']
+               item/RunCompletedDate_x002f_Time = @if( equals( outputs('Pending_Review_Count'), 0 ), utcNow(), null )
+               item/SourceFileGroup = @outputs('Current_Candidate_Import_Run')?['SourceFileGroup']
+               item/FinalizationStatus/Value = @if( greater( outputs('Pending_Review_Count'), 0 ), 'Awaiting Review', 'Completed' )
+               item/FinalizerRunID = @if( greater( outputs('Pending_Review_Count'), 0 ), null, outputs('Generate_Finalizer_Run_ID') )
+               item/FinalizationStartedDate = @if( greater( outputs('Pending_Review_Count'), 0 ), null, outputs('Verify_Import_Run_Finalization_Claim')?['body/FinalizationStartedDate'] )
+               item/FinalizationCompletedDate = @if( greater( outputs('Pending_Review_Count'), 0 ), null, utcNow() )
+               item/FinalizationErrorMessage = @null
+               item/EmailBatchReady = @equals( outputs('Pending_Review_Count'), 0 )
+               item/DashboardRefreshRequested = @true
+               item/DashboardRefreshRequestedDate = @utcNow()
+               item/DashboardRefreshCompleted = @false
+               item/ClassificationReady = @true
+               item/ClassificationCompletedDate = @coalesce( outputs('Verify_Import_Run_Finalization_Claim')?['body/ClassificationCompletedDate'], utcNow() )
+               item/ClassificationRefreshRequested = @true
+               item/ClassificationRefreshRequestedDa = @coalesce( outputs('Verify_Import_Run_Finalization_Claim')?['body/ClassificationRefreshRequestedDate'], utcNow() )
+          ## Classification_Refresh_Not_Requested [If] runAfter={}
+             expression: {"and": [{"equals": ["@coalesce(\r\n outputs('Current_Candidate_Import_Run')?['ClassificationRefreshRequested'],\r\n false\r\n)", "@false"]}]}
+            ## Request_TRACE_Classification_Dashboard_Refresh [OpenApiConnection] runAfter={}
+               op: RefreshDataset
+               groupid = <PBI_WORKSPACE_ID>
+               datasetid = <PBI_DATASET_ID>
+            ## Mark_Classification_Ready [OpenApiConnection] runAfter={'Request_TRACE_Classification_Dashboard_Refresh': ['Succeeded']}
+               op: PatchItem
+               table = <LIST_IMPORT_RUNS>
+               id = @outputs('Current_Candidate_Import_Run')?['ID']
+               item/Title = @outputs('Current_Candidate_Import_Run')?['Title']
+               item/FileName = @outputs('Current_Candidate_Import_Run')?['FileName']
+               item/RunDate_x002f_Time = @outputs('Current_Candidate_Import_Run')?['RunDate_x002f_Time']
+               item/RunID = @outputs('Current_Candidate_Import_Run')?['RunID']
+               item/FolderType/Value = @outputs('Current_Candidate_Import_Run')?['FolderType']?['Value']
+               item/RowsRead = @outputs('Actual_Processing_Result_Count')
+               item/RowsCreated = @int( coalesce( outputs('Current_Candidate_Import_Run')?['RowsCreated'], 0 ) )
+               item/RowsUpdated = @outputs('Active_Updated_Count')
+               item/RowsSkipped = @int( coalesce( outputs('Current_Candidate_Import_Run')?['RowsSkipped'], 0 ) )
+               item/RowsFailed = @int(0)
+               item/RunStatus/Value = Started
+               item/ErrorMessage = @null
+               item/ProcessedFilePath = @null
+               item/Notes = @concat( coalesce( outputs('Current_Candidate_Import_Run')?['Notes'], '' ), ' Tracking classification completed and the classification dashboard refresh was requested. TRACE case finalization remains in progress.' )
+               item/HistoricalMatches = @outputs('Historical_Match_Count')
+               item/DuplicateRows = @int( coalesce( outputs('Current_Candidate_Import_Run')?['DuplicateRows'], 0 ) )
+               item/FirstCaseNumberAssigned = @if( empty( outputs('Current_Candidate_Import_Run')?['FirstCaseNumberAssigned'] ), variables('FirstCaseNumberAssigned'), outputs('Current_Candidate_Import_Run')?['FirstCaseNumberAssigned'] )
+               item/LastCaseNumberAssigned = @if( greater( variables('CreatedCaseCount'), 0 ), variables('LastCaseNumberAssigned'), outputs('Current_Candidate_Import_Run')?['LastCaseNumberAssigned'] )
+               item/RunCompletedDate_x002f_Time = @null
+               item/SourceFileGroup = @outputs('Current_Candidate_Import_Run')?['SourceFileGroup']
+               item/FinalizationStatus/Value = Processing
+               item/FinalizerRunID = @outputs('Generate_Finalizer_Run_ID')
+               item/FinalizationStartedDate = @outputs('Verify_Import_Run_Finalization_Claim')?['body/FinalizationStartedDate']
+               item/FinalizationCompletedDate = @null
+               item/FinalizationErrorMessage = @null
+               item/EmailBatchReady = false
+               item/DashboardRefreshRequested = false
+               item/DashboardRefreshRequestedDate = @null
+               item/DashboardRefreshCompleted = false
+               item/ClassificationReady = true
+               item/ClassificationCompletedDate = @utcNow()
+               item/ClassificationRefreshRequested = true
+               item/ClassificationRefreshRequestedDa = @utcNow()
+            -- ELSE
+          -- ELSE
+        ## Filter_New_Case_Created_Results [Query] runAfter={'New_Case_Required_Count': ['Succeeded']}
+           inputs: {"from": "@outputs('All_Candidate_Run_Processing_Results')\r\n", "where": "@equals(\n item()?['field_4']?['Value'],\n 'New Case Created'\n)"}
+        ## New_Case_Created_Count [Compose] runAfter={'Filter_New_Case_Created_Results': ['Succeeded']}
+           inputs: @length( body('Filter_New_Case_Created_Results') )
+        ## Filter_Dashboard_Only_Results [Query] runAfter={'Pending_Review_Count': ['Succeeded']}
+           inputs: {"from": "@outputs('All_Candidate_Run_Processing_Results')", "where": "@equals(\n item()?['field_4']?['Value'],\n 'Dashboard Only - No Case'\n)"}
+        ## Dashboard_Only_Count [Compose] runAfter={'Filter_Dashboard_Only_Results': ['Succeeded']}
+           inputs: @length( body('Filter_Dashboard_Only_Results') )
+        ## Filter_Pending_Review_Results [Query] runAfter={'Follow-Up_Required_Count': ['Succeeded']}
+           inputs: {"from": "@outputs('All_Candidate_Run_Processing_Results')", "where": "@or(\r\n equals(\r\n item()?['CaseReviewDecision']?['Value'],\r\n 'Pending Review'\r\n ),\r\n equals(\r\n item()?['CaseReviewDecision'],\r\n 'Pending Review'\r\n ),\r\n and(\r\n or(\r\n equals(\r\n item()?['field_4']?['Value'],\r\n 'Needs Case Review'\r\n ),\r\n equals(\r\n item()?['field_4'],\r\n 'Needs Case Review'\r\n )\r\n ),\r\n empty(\r\n coalesce(\r\n item()?['CaseReviewDecision']?['Value'],\r\n item()?['CaseReviewDecision']\r\n )\r\n )\r\n )\r\n)"}
+        ## Pending_Review_Count [Compose] runAfter={'Filter_Pending_Review_Results': ['Succeeded']}
+           inputs: @length( body('Filter_Pending_Review_Results') )
+        ## Filter_Reference_History_Results [Query] runAfter={'Historical_Match_Count': ['Succeeded']}
+           inputs: {"from": "@outputs('All_Candidate_Run_Processing_Results')", "where": "@equals(\r\n item()?['field_4']?['Value'],\r\n 'Reference History - No Action'\r\n)"}
+        ## Reference_History_Count [Compose] runAfter={'Filter_Reference_History_Results': ['Succeeded']}
+           inputs: @length( body('Filter_Reference_History_Results') )
+        ## Filter_Operational_Dashboard_Results [Query] runAfter={'Reference_History_Count': ['Succeeded']}
+           inputs: {"from": "@outputs('All_Candidate_Run_Processing_Results')", "where": "@equals(\r\n item()?['field_4']?['Value'],\r\n 'Operational Dashboard - No Action'\r\n)"}
+        ## Operational_Dashboard_Count [Compose] runAfter={'Filter_Operational_Dashboard_Results': ['Succeeded']}
+           inputs: @length( body('Filter_Operational_Dashboard_Results') )
+        ## Filter_Communication_Review_Results [Query] runAfter={'Operational_Dashboard_Count': ['Succeeded']}
+           inputs: {"from": "@outputs('All_Candidate_Run_Processing_Results')", "where": "@equals(\r\n item()?['field_4']?['Value'],\r\n 'Communication Review'\r\n)"}
+        ## Communication_Review_Count [Compose] runAfter={'Filter_Communication_Review_Results': ['Succeeded']}
+           inputs: @length( body('Filter_Communication_Review_Results') )
+        ## Filter_Manual_Classification_Results [Query] runAfter={'Communication_Review_Count': ['Succeeded']}
+           inputs: {"from": "@outputs('All_Candidate_Run_Processing_Results')", "where": "@equals(\r\n item()?['field_4']?['Value'],\r\n 'Manual Classification'\r\n)"}
+        ## Manual_Classification_Count [Compose] runAfter={'Filter_Manual_Classification_Results': ['Succeeded']}
+           inputs: @length( body('Filter_Manual_Classification_Results') )
+        ## Filter_Needs_Case_Review_Results [Query] runAfter={'Manual_Classification_Count': ['Succeeded']}
+           inputs: {"from": "@outputs('All_Candidate_Run_Processing_Results')\r\n", "where": "@or(\n equals(item()?['field_4']?['Value'], 'Needs Case Review'),\n equals(item()?['field_4'], 'Needs Case Review')\n)"}
+        ## Needs_Case_Review_Count [Compose] runAfter={'Filter_Needs_Case_Review_Results': ['Succeeded']}
+           inputs: @length(body('Filter_Needs_Case_Review_Results'))
+        ## Filter_Follow-Up_Required_Results [Query] runAfter={'Needs_Case_Review_Count': ['Succeeded']}
+           inputs: {"from": "@outputs('All_Candidate_Run_Processing_Results')\r\n", "where": "@or(\n equals(item()?['field_4']?['Value'], 'Follow-Up Required'),\n equals(item()?['field_4'], 'Follow-Up Required')\n)"}
+        ## Follow-Up_Required_Count [Compose] runAfter={'Filter_Follow-Up_Required_Results': ['Succeeded']}
+           inputs: @length(body('Filter_Follow-Up_Required_Results'))
+        ## Classified_Result_Count [Compose] runAfter={'Dashboard_Only_Count': ['Succeeded']}
+           inputs: @add( add( add( outputs('Active_Updated_Count'), outputs('Historical_Match_Count') ), add( outputs('New_Case_Required_Count'), outputs('New_Case_Created_Count') ) ), add( add( outputs('Dashboard_Only_Count'), add( outputs('Reference_History_Count'), outputs('Operational_Dashboard_Count') ) ), add( add( outputs('Communication_Review_Count'), outputs('Manual_Classification_Count') ), add( outputs('Needs_Case_Review_Count'), outputs('Follow-Up_Required_Count') ) ) ) )
+        ## Unclassified_Result_Count [Compose] runAfter={'Classified_Result_Count': ['Succeeded']}
+           inputs: @sub( outputs('Actual_Processing_Result_Count'), outputs('Classified_Result_Count') )
+        -- ELSE
+      -- ELSE
+    ## Candidate_Results_Page_1_Last_ID [Compose] runAfter={'Get_Candidate_Run_Processing_Results_Page_1': ['Succeeded']}
+       inputs: @if( empty(body('Get_Candidate_Run_Processing_Results_Page_1')?['value']), 0, int( last( body('Get_Candidate_Run_Processing_Results_Page_1')?['value'] )?['ID'] ) )
+    ## Get_Candidate_Run_Processing_Results_Page_2 [OpenApiConnection] runAfter={'Candidate_Results_Page_1_Last_ID': ['Succeeded']}
+       runtimeConfiguration: {"paginationPolicy": {"minimumItemCount": 5000}}
+       op: GetItems
+       table = <LIST_RESULTS>
+       $filter = @concat( 'field_1 eq ''', replace( outputs('Current_Candidate_Import_Run')?['RunID'], '''', '''''' ), ''' and ID gt ', string(outputs('Candidate_Results_Page_1_Last_ID')) )
+       $orderby = ID asc
+       $top = 5000
+    ## All_Candidate_Run_Processing_Results [Compose] runAfter={'Get_Candidate_Run_Processing_Results_Page_2': ['Succeeded']}
+       inputs: @union( body('Get_Candidate_Run_Processing_Results_Page_1')?['value'], body('Get_Candidate_Run_Processing_Results_Page_2')?['value'] )
+    -- ELSE
+  ## Finalizer_Selected_Run_Check [Compose] runAfter={'Current_Candidate_Import_Run': ['Succeeded']}
+     inputs: @concat( 'RunID: ', string( outputs('Current_Candidate_Import_Run')?['RunID'] ), ' | Created: ', string( outputs('Current_Candidate_Import_Run')?['Created'] ), ' | Finalization Status: ', string( outputs('Current_Candidate_Import_Run')?['FinalizationStatus']?['Value'] ), ' | Rows Read: ', string( outputs('Current_Candidate_Import_Run')?['RowsRead'] ) )
+  -- ELSE
+## Initialize_Expected_Processing_Result_Count [InitializeVariable] runAfter={}
+   inputs: {"variables": [{"name": "ExpectedProcessingResultCount", "type": "integer", "value": 0}]}
+## Initialize_Case_Date_Key [InitializeVariable] runAfter={'Initialize_Expected_Processing_Result_Count': ['Succeeded']}
+   inputs: {"variables": [{"name": "CaseDateKey", "type": "string", "value": "@formatDateTime(\r\n convertTimeZone(\r\n utcNow(),\r\n 'UTC',\r\n 'Central Standard Time'\r\n ),\r\n 'yyyyMMdd'\r\n)"}]}
+## Initialize_Counter_Item_ID [InitializeVariable] runAfter={'Initialize_Case_Date_Key': ['Succeeded']}
+   inputs: {"variables": [{"name": "CounterItemID", "type": "integer", "value": "@int(0)"}]}
+## Initialize_Current_Case_Sequence [InitializeVariable] runAfter={'Initialize_Counter_Item_ID': ['Succeeded']}
+   inputs: {"variables": [{"name": "CurrentCaseSequence", "type": "integer", "value": "@int(0)"}]}
+## Initialize_Created_Case_Count [InitializeVariable] runAfter={'Initialize_Current_Case_Sequence': ['Succeeded']}
+   inputs: {"variables": [{"name": "CreatedCaseCount", "type": "integer", "value": 0}]}
+## Initialize_First_Case_Number_Assigned [InitializeVariable] runAfter={'Initialize_Created_Case_Count': ['Succeeded']}
+   inputs: {"variables": [{"name": "FirstCaseNumberAssigned", "type": "string"}]}
+## Initialize_Last_Case_Number_Assigned [InitializeVariable] runAfter={'Initialize_First_Case_Number_Assigned': ['Succeeded']}
+   inputs: {"variables": [{"name": "LastCaseNumberAssigned", "type": "string"}]}
+## Mark_Finalization_Failed [OpenApiConnection] runAfter={'Unfinalized_Import_Run_Found': ['TimedOut', 'Failed']}
+   op: PatchItem
+   table = <LIST_IMPORT_RUNS>
+   id = @outputs('Current_Candidate_Import_Run')?['ID']
+   item/Title = @outputs('Current_Candidate_Import_Run')?['Title']
+   item/FileName = @outputs('Current_Candidate_Import_Run')?['FileName']
+   item/RunDate_x002f_Time = @outputs('Current_Candidate_Import_Run')?['RunDate_x002f_Time']
+   item/RunID = @outputs('Current_Candidate_Import_Run')?['RunID']
+   item/FolderType/Value = @outputs('Current_Candidate_Import_Run')?['FolderType']?['Value']
+   item/RowsRead = @int( coalesce( outputs('Current_Candidate_Import_Run')?['RowsRead'], 0 ) )
+   item/RowsCreated = @int( coalesce( outputs('Current_Candidate_Import_Run')?['RowsCreated'], 0 ) )
+   item/RowsUpdated = @int( coalesce( outputs('Current_Candidate_Import_Run')?['RowsUpdated'], 0 ) )
+   item/RowsSkipped = @int( coalesce( outputs('Current_Candidate_Import_Run')?['RowsSkipped'], 0 ) )
+   item/RowsFailed = @add( int( coalesce( outputs('Current_Candidate_Import_Run')?['RowsFailed'], 0 ) ), 1 )
+   item/RunStatus/Value = Failed
+   item/Notes = @outputs('Current_Candidate_Import_Run')?['Notes']
+   item/HistoricalMatches = @int( coalesce( outputs('Current_Candidate_Import_Run')?['HistoricalMatches'], 0 ) )
+   item/DuplicateRows = @int( coalesce( outputs('Current_Candidate_Import_Run')?['DuplicateRows'], 0 ) )
+   item/FirstCaseNumberAssigned = @outputs('Current_Candidate_Import_Run')?['FirstCaseNumberAssigned']
+   item/LastCaseNumberAssigned = @outputs('Current_Candidate_Import_Run')?['LastCaseNumberAssigned']
+   item/FinalizationStatus/Value = Failed
+   item/FinalizerRunID = @coalesce( outputs('Generate_Finalizer_Run_ID'), outputs('Current_Candidate_Import_Run')?['FinalizerRunID'] )
+   item/FinalizationStartedDate = @coalesce( outputs('Verify_Import_Run_Finalization_Claim')?['body/FinalizationStartedDate'], outputs('Current_Candidate_Import_Run')?['FinalizationStartedDate'] )
+   item/FinalizationCompletedDate = @utcNow()
+   item/FinalizationErrorMessage = @concat( 'Scheduled finalization failed or timed out. Flow run: ', workflow()?['run']?['name'], '. Review the failed action before retrying this RunID.' )
+   item/EmailBatchReady = false
+   item/DashboardRefreshRequested = false
+   item/DashboardRefreshRequestedDate = @null
+   item/DashboardRefreshCompleted = false
+   item/ClassificationReady = @coalesce( outputs('Verify_Import_Run_Finalization_Claim')?['body/ClassificationReady'], false )
+   item/ClassificationCompletedDate = @outputs('Current_Candidate_Import_Run')?['ClassificationCompletedDate']
+   item/ClassificationRefreshRequested = @coalesce( outputs('Verify_Import_Run_Finalization_Claim')?['body/ClassificationRefreshRequested'], false )
+   item/ClassificationRefreshRequestedDa = @outputs('Current_Candidate_Import_Run')?['ClassificationRefreshRequestedDate']
+## Stop_Failed_Finalization [Terminate] runAfter={'Mark_Finalization_Failed': ['Succeeded']}
+   inputs: {"runStatus": "Failed", "runError": {"message": "@concat(\r\n 'TRACE finalization failed for RunID ',\r\n outputs('Current_Candidate_Import_Run')?['RunID'],\r\n '. Review flow run ',\r\n workflow()?['run']?['name'],\r\n '.'\r\n)"}}
+## Newest_Eligible_Import_Run [Compose] runAfter={'Get_Candidate_Import_Runs': ['Succeeded']}
+   inputs: @first( body('Get_Candidate_Import_Runs')?['value'] )
+## Selected_Import_Run_ID [Compose] runAfter={'Newest_Eligible_Import_Run': ['SUCCEEDED']}
+   inputs: @outputs('Newest_Eligible_Import_Run')?['RunID']
